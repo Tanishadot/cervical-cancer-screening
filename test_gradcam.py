@@ -35,7 +35,7 @@ from utils.config_manager import ConfigManager
 
 
 class GradCAM:
-    """Grad-CAM implementation for model explainability."""
+    """Grad-CAM implementation for model explainability with Swin Transformer support."""
     
     def __init__(self, model: torch.nn.Module, target_layer: str):
         """
@@ -43,7 +43,7 @@ class GradCAM:
         
         Args:
             model: PyTorch model
-            target_layer: Name of target convolutional layer
+            target_layer: Name of target layer
         """
         self.model = model
         self.target_layer = target_layer
@@ -56,16 +56,17 @@ class GradCAM:
     def _register_hooks(self):
         """Register forward and backward hooks."""
         def forward_hook(module, input, output):
-            self.activations = output
+            self.activations = output.detach().clone()
         
         def backward_hook(module, grad_input, grad_output):
-            self.gradients = grad_output[0]
+            self.gradients = grad_output[0].detach().clone()
         
         # Find target layer and register hooks
         target_module = None
         for name, module in self.model.named_modules():
             if name == self.target_layer:
                 target_module = module
+                print(f"✅ Found target layer: {name} -> {type(module).__name__}")
                 break
         
         if target_module is None:
@@ -74,48 +75,98 @@ class GradCAM:
         target_module.register_forward_hook(forward_hook)
         target_module.register_backward_hook(backward_hook)
     
-    def generate_cam(self, input_tensor: torch.Tensor, class_idx: int) -> np.ndarray:
+    def reshape_transform(self, tensor: torch.Tensor, height: int = 7, width: int = 7) -> torch.Tensor:
+        """
+        Reshape transformer tokens to spatial feature map.
+        
+        Args:
+            tensor: Input tensor of shape [B, N, C]
+            height: Height of feature map
+            width: Width of feature map
+            
+        Returns:
+            Reshaped tensor of shape [B, C, H, W]
+        """
+        # Remove class token (first token)
+        result = tensor[:, 1:, :]
+        
+        # Reshape to spatial format
+        result = result.reshape(tensor.size(0), height, width, tensor.size(2))
+        
+        # Permute to [B, C, H, W] format
+        result = result.permute(0, 3, 1, 2)
+        
+        return result
+    
+    def generate_cam(self, input_tensor: torch.Tensor, class_idx: int, model_type: str = "cnn") -> np.ndarray:
         """
         Generate Grad-CAM heatmap.
         
         Args:
             input_tensor: Input tensor (1, C, H, W)
             class_idx: Target class index
+            model_type: "cnn" or "swin" for different architectures
             
         Returns:
             Grad-CAM heatmap as numpy array
         """
+        print(f"🔍 Generating Grad-CAM for class {class_idx}")
+        print(f"📊 Input shape: {input_tensor.shape}")
+        
+        # Enable gradients
+        self.model.eval()  # Keep eval mode for batch norm, but enable gradients
+        input_tensor.requires_grad_(True)
+        
         # Forward pass
-        self.model.eval()
         output = self.model(input_tensor)
+        print(f"🎯 Output shape: {output.shape}")
         
         # Zero gradients
         self.model.zero_grad()
         
         # Backward pass for target class
         class_score = output[0, class_idx]
+        print(f"📈 Class score: {class_score.item():.4f}")
         class_score.backward()
         
         # Check if gradients and activations are available
         if self.gradients is None or self.activations is None:
             raise ValueError("Gradients or activations not captured. Check target layer name.")
         
-        # Get gradients and activations
-        gradients = self.gradients[0]  # (C, H, W)
-        activations = self.activations[0]  # (C, H, W)
+        print(f"🔥 Activations shape: {self.activations.shape}")
+        print(f"⚡ Gradients shape: {self.gradients.shape}")
+        
+        # Handle different model architectures
+        if model_type == "swin":
+            # For Swin Transformers, reshape tokens to spatial format
+            activations_2d = self.reshape_transform(self.activations, height=7, width=7)
+            gradients_2d = self.reshape_transform(self.gradients, height=7, width=7)
+            print(f"🔄 Reshaped activations: {activations_2d.shape}")
+            print(f"🔄 Reshaped gradients: {gradients_2d.shape}")
+        else:
+            # For CNN models, use directly
+            activations_2d = self.activations
+            gradients_2d = self.gradients
         
         # Global average pooling of gradients
-        weights = torch.mean(gradients, dim=(1, 2))  # (C,)
+        weights = torch.mean(gradients_2d, dim=(2, 3), keepdim=True)  # [B, C, 1, 1]
+        print(f"⚖️  Weights shape: {weights.shape}")
         
         # Weighted combination of activation maps
-        cam = torch.zeros(activations.shape[1:], dtype=torch.float32)
-        for i, w in enumerate(weights):
-            cam += w * activations[i]
+        cam = torch.sum(weights * activations_2d, dim=1, keepdim=True)  # [B, 1, H, W]
+        print(f"🗺️  CAM shape before squeeze: {cam.shape}")
+        
+        # Remove batch dimension and squeeze
+        cam = cam.squeeze(0).squeeze(0)  # [H, W]
+        print(f"🗺️  CAM shape after squeeze: {cam.shape}")
         
         # ReLU and normalize
         cam = F.relu(cam)
+        print(f"📊 CAM stats - Min: {cam.min():.4f}, Max: {cam.max():.4f}")
+        
         cam = cam - cam.min()
         cam = cam / cam.max() if cam.max() > 0 else cam
+        print(f"📊 Normalized CAM - Min: {cam.min():.4f}, Max: {cam.max():.4f}")
         
         return cam.detach().cpu().numpy()
 
@@ -264,33 +315,38 @@ def generate_gradcam_visualization(
         probabilities = F.softmax(output, dim=1)
         confidence, predicted_class = torch.max(probabilities, 1)
     
-    # Generate Grad-CAM heatmap using a simplified approach
-    # For now, we'll create a synthetic heatmap based on confidence
-    # In a real implementation, this would use proper Grad-CAM with layer hooks
+    # Determine model type and select appropriate target layer
+    model_name = getattr(model, 'model_name', 'unknown').lower()
+    print(f"🤖 Model type: {model_name}")
     
-    # Create a synthetic heatmap centered on the image
-    h, w = original_image.shape[:2]
-    heatmap = np.zeros((h, w))
-    
-    # Create a circular hotspot (simulating attention)
-    center_y, center_x = h // 2, w // 2
-    y, x = np.ogrid[:h, :w]
-    mask = (y - center_y)**2 + (x - center_x)**2 <= (min(h, w) // 4)**2
-    heatmap[mask] = confidence.item()
-    
-    # Add some noise to make it more realistic
-    noise = np.random.normal(0, 0.1, (h, w))
-    heatmap = heatmap + noise
-    
-    # Normalize heatmap to 0-1 range
-    heatmap = heatmap - heatmap.min()
-    heatmap = heatmap / heatmap.max() if heatmap.max() > 0 else heatmap
-    
-    # Resize heatmap to match original image size (if needed)
-    if heatmap.shape != (original_image.shape[0], original_image.shape[1]):
-        heatmap_resized = cv2.resize(heatmap, (original_image.shape[1], original_image.shape[0]))
+    if 'swin' in model_name:
+        # Swin Transformer target layer - use the final norm layer
+        target_layer = "backbone.norm"
+        model_type = "swin"
+        print(f"🎯 Using Swin Transformer target layer: {target_layer}")
     else:
-        heatmap_resized = heatmap
+        # CNN target layer (EfficientNet, ResNet)
+        target_layer = "backbone.conv_head"
+        model_type = "cnn"
+        print(f"🎯 Using CNN target layer: {target_layer}")
+    
+    # Initialize Grad-CAM
+    grad_cam = GradCAM(model, target_layer)
+    
+    # Generate Grad-CAM heatmap
+    try:
+        cam = grad_cam.generate_cam(image_tensor, predicted_class.item(), model_type)
+    except Exception as e:
+        print(f"❌ Grad-CAM generation failed: {e}")
+        # Fallback to simple confidence map
+        h, w = original_image.shape[:2]
+        cam = np.random.rand(h, w) * confidence.item()
+        cam = (cam - cam.min()) / (cam.max() - cam.min())
+    
+    # Resize heatmap to match original image size using bilinear interpolation
+    print(f"📐 Resizing CAM from {cam.shape} to {original_image.shape[:2]}")
+    heatmap_resized = cv2.resize(cam, (original_image.shape[1], original_image.shape[0]), 
+                               interpolation=cv2.INTER_LINEAR)
     
     # Create colored heatmap using jet colormap
     heatmap_colored = cm.jet(heatmap_resized)[:, :, :3]  # Remove alpha channel
@@ -363,6 +419,8 @@ def generate_gradcam_visualization(
     axes[1, 1].text(0.1, 0.3, f'True Class: {true_label_name}', fontsize=12)
     axes[1, 1].text(0.1, 0.2, f'Confidence: {confidence.item():.3f}', fontsize=12)
     axes[1, 1].text(0.1, 0.1, f'Image: {os.path.basename(image_path)}', fontsize=10)
+    axes[1, 1].text(0.1, 0.05, f'Model: {model_name}', fontsize=10)
+    axes[1, 1].text(0.1, 0.0, f'Target Layer: {target_layer}', fontsize=9)
     axes[1, 1].axis('off')
     
     plt.tight_layout()

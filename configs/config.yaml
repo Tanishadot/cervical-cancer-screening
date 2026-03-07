@@ -1,0 +1,232 @@
+# Configuration file for cervical cancer classification research pipeline
+
+# Experiment configuration
+experiment:
+  name: "cervical_cancer_classification"
+  description: "Deep learning pipeline for cervical cancer screening using Pap smear datasets"
+  seed: 42
+  output_dir: "outputs"
+  
+# Dataset configuration
+dataset:
+  root_dir: "datasets"
+  train_dataset: "sipakmed"  # Options: "sipakmed", "herlev"
+  test_dataset: "herlev"    # For cross-dataset evaluation
+  
+  # Classification mode: "binary" or "multiclass"
+  classification_mode: "binary"
+  
+  # Data split ratios (for same-dataset evaluation)
+  train_split: 0.7
+  val_split: 0.15
+  test_split: 0.15
+  
+  # Batch sizes
+  batch_size: 32
+  num_workers: 0
+  
+# Model configuration
+model:
+  # Model architecture: "efficientnet_b0", "resnet50", "swin_transformer"
+  architecture: "efficientnet_b0"
+  
+  # Number of classes (will be set automatically based on classification_mode)
+  num_classes: 2
+  
+  # Transfer learning settings
+  pretrained: true
+  freeze_backbone: true
+  unfreeze_epoch: 10
+  
+  # Regularization
+  dropout_rate: 0.3
+  
+# Training configuration
+training:
+  # Training parameters
+  num_epochs: 5
+  learning_rate: 0.001
+  weight_decay: 0.0001
+  
+  # Early stopping
+  early_stopping:
+    patience: 15
+    min_delta: 0.001
+    restore_best_weights: true
+  
+  # Class weighting for imbalanced datasets
+  use_class_weights: true
+  
+  # Mixed precision training
+  use_amp: true
+  
+  # Learning rate scheduling
+  scheduler:
+    type: "cosine_annealing"
+    T_max: 100
+    eta_min: 0.00001
+
+# Data augmentation configuration
+augmentation:
+  # Image size
+  image_size: 224
+  
+  # Enable/disable different augmentation types
+  use_color_augmentation: true
+  use_geometric_augmentation: true
+  
+  # Augmentation probabilities
+  horizontal_flip_p: 0.5
+  vertical_flip_p: 0.3
+  rotation_limit: 30
+  brightness_limit: 0.3
+  contrast_limit: 0.3
+  hue_limit: 20
+  saturation_limit: 30
+  value_limit: 20
+  
+  # Test-time augmentation
+  test_time_augmentation:
+    enabled: false
+    num_augmentations: 5
+
+# Preprocessing configuration
+preprocessing:
+  # Image preprocessing
+  target_size: [224, 224]
+  apply_clahe: true
+  clahe_clip_limit: 2.0
+  clahe_tile_size: [8, 8]
+  apply_color_normalization: true
+  
+  # Stain normalization
+  apply_stain_normalization: false
+  stain_normalization_method: "macenko"  # Options: "macenko", "reinhard"
+
+# Evaluation configuration
+evaluation:
+  # Cross-dataset evaluation
+  cross_dataset:
+    enabled: true
+    evaluate_all_combinations: true
+  
+  # Metrics to compute
+  metrics:
+    - "accuracy"
+    - "precision"
+    - "recall"
+    - "f1_score"
+    - "auc_roc"
+    - "confusion_matrix"
+  
+  # Visualization
+  visualizations:
+    - "training_curves"
+    - "confusion_matrix"
+    - "roc_curves"
+    - "precision_recall_curves"
+    - "class_distribution"
+
+# Explainable AI (XAI) configuration
+xai:
+  enabled: true
+  methods:
+    - "grad_cam"
+    - "grad_cam_plus"
+    - "attention_rollout"
+  
+  # Number of samples to analyze with XAI
+  num_samples: 20
+  
+  # Save individual visualizations
+  save_individual_visualizations: true
+  
+  # Target layers for Grad-CAM (will be auto-detected if not specified)
+  target_layers: []
+
+# Hardware configuration
+hardware:
+  # Device: "auto", "cuda", "cpu"
+  device: "auto"
+  
+  # GPU settings
+  gpu:
+    memory_fraction: 0.9
+    allow_growth: true
+  
+  # Mixed precision
+  mixed_precision: true
+
+# Logging and reproducibility
+logging:
+  level: "INFO"
+  save_logs: true
+  log_interval: 10
+  
+  # TensorBoard logging
+  tensorboard:
+    enabled: false
+    log_dir: "logs/tensorboard"
+
+# Reproducibility settings
+reproducibility:
+  seed: 42
+  deterministic: true
+  benchmark: false
+
+# Paths configuration
+paths:
+  datasets: "datasets"
+  models: "outputs/models"
+  visualizations: "outputs/visualizations"
+  xai_outputs: "outputs/xai"
+  logs: "outputs/logs"
+  checkpoints: "outputs/checkpoints"
+
+# Experiment modes
+experiment_modes:
+  # Experiment A: Binary classification (Normal vs Abnormal)
+  binary_classification:
+    enabled: true
+    description: "Binary classification for cervical cancer screening"
+    
+  # Experiment B: Multi-class classification
+  multiclass_classification:
+    enabled: true
+    description: "Multi-class classification with original labels"
+
+# Cross-dataset evaluation settings
+cross_dataset_evaluation:
+  # Train on SIPaKMeD, test on Herlev
+  sipakmed_to_herlev:
+    enabled: true
+    
+  # Train on Herlev, test on SIPaKMeD
+  herlev_to_sipakmed:
+    enabled: true
+    
+  # Evaluate both directions
+  bidirectional: true
+
+# Advanced settings
+advanced:
+  # Gradient accumulation for large effective batch sizes
+  gradient_accumulation_steps: 1
+  
+  # Gradient clipping
+  gradient_clipping:
+    enabled: true
+    max_norm: 1.0
+  
+  # EMA (Exponential Moving Average) of model weights
+  ema:
+    enabled: false
+    decay: 0.999
+  
+  # Model checkpointing
+  checkpointing:
+    save_best: true
+    save_last: true
+    save_top_k: 3
+    monitor: "val_f1_macro"
+    mode: "max"

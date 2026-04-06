@@ -22,12 +22,17 @@ dataset:
   test_split: 0.15
   
   # Batch sizes
-  batch_size: 32
+  batch_size: 16
   num_workers: 0
+  
+  # Dataset validation and safety settings
+  use_cropped_only: true
+  run_validation: true
+  validation_strict_mode: true
   
 # Model configuration
 model:
-  # Model architecture: "efficientnet_b0", "resnet50", "swin_transformer"
+  # Model architecture: "efficientnet_b0", "resnet50", "swin_base_patch4_window7_224"
   architecture: "efficientnet_b0"
   
   # Number of classes (will be set automatically based on classification_mode)
@@ -130,13 +135,8 @@ evaluation:
 # Explainable AI (XAI) configuration
 xai:
   enabled: true
-  methods:
-    - "grad_cam"
-    - "grad_cam_plus"
-    - "attention_rollout"
-  
-  # Number of samples to analyze with XAI
-  num_samples: 20
+  method: "gradcam"  # Options: "gradcam", "attention_rollout"
+  num_samples: 10
   
   # Save individual visualizations
   save_individual_visualizations: true

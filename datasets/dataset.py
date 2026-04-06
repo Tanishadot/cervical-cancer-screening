@@ -8,9 +8,12 @@ import torch
 from torch.utils.data import Dataset, random_split
 from PIL import Image
 import numpy as np
+from pathlib import Path
 from typing import Dict, List, Tuple, Optional, Callable
 import cv2
 from collections import Counter
+import logging
+import warnings
 
 from utils.label_mapping import LabelMapper, DatasetType, ClassificationMode
 
@@ -27,7 +30,8 @@ class CervicalCellDataset(Dataset):
         dataset_type: DatasetType,
         label_mapper: LabelMapper,
         transform: Optional[Callable] = None,
-        mode: str = "train"
+        mode: str = "train",
+        use_cropped_only: bool = False
     ):
         """
         Initialize dataset.
@@ -38,15 +42,23 @@ class CervicalCellDataset(Dataset):
             label_mapper: Label mapping instance
             transform: Image transformations
             mode: Dataset mode ("train", "val", "test")
+            use_cropped_only: If True, only load images from CROPPED folders
         """
         self.root_dir = root_dir
         self.dataset_type = dataset_type
         self.label_mapper = label_mapper
         self.transform = transform
         self.mode = mode
+        self.use_cropped_only = use_cropped_only
+        
+        # Setup structured logging
+        self.logger = logging.getLogger(f"{__name__}.{self.dataset_type.value}")
         
         self.samples = []
         self._load_dataset()
+        
+        # Enhanced logging with detailed statistics
+        self._log_dataset_statistics()
     
     def _load_dataset(self):
         """Load dataset from directory structure."""
@@ -59,7 +71,11 @@ class CervicalCellDataset(Dataset):
             dataset_dir = os.path.join(self.root_dir, self.dataset_type.value)
         
         if not os.path.exists(dataset_dir):
+            self.logger.error(f"Dataset directory not found: {dataset_dir}")
             raise FileNotFoundError(f"Dataset directory not found: {dataset_dir}")
+        
+        self.logger.info(f"Loading {self.dataset_type.value} dataset from: {dataset_dir}")
+        self.logger.info(f"Mode: {self.use_cropped_only and 'CROPPED only' or 'All images'}")
         
         # Expected structure: dataset/class_name/images/
         class_names = self.label_mapper.get_dataset_classes(self.dataset_type)
@@ -81,20 +97,43 @@ class CervicalCellDataset(Dataset):
                         break
             
             if class_dir and os.path.exists(class_dir):
-                # Handle nested structure for SIPaKMeD
-                if self.dataset_type == DatasetType.SIPAKMED:
-                    # Check for nested folder with same name
-                    nested_dir = os.path.join(class_dir, os.path.basename(class_dir))
-                    if os.path.exists(nested_dir):
-                        class_dir = nested_dir
+                # Use recursive traversal to find ALL images
+                class_path = Path(class_dir)
+                image_extensions = {'.png', '.jpg', '.jpeg', '.bmp', '.tif', '.tiff'}
                 
-                # Load images from the final directory
-                for img_file in os.listdir(class_dir):
-                    if img_file.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp', '.tif', '.tiff')):
-                        img_path = os.path.join(class_dir, img_file)
-                        # Map label according to current mode
-                        mapped_label = self.label_mapper.map_label(class_id, self.dataset_type)
-                        self.samples.append((img_path, mapped_label, class_id))
+                # Recursively find all images in this class directory
+                all_images = []
+                for img_file in class_path.rglob("*"):
+                    if img_file.is_file() and img_file.suffix.lower() in image_extensions:
+                        all_images.append(img_file)
+                
+                # Filter for CROPPED only if requested
+                if self.use_cropped_only:
+                    cropped_images = [img for img in all_images if "CROPPED" in str(img).upper()]
+                    if len(cropped_images) == 0 and len(all_images) > 0:
+                        self.logger.warning(f"No CROPPED images found in class {class_name}, "
+                                          f"found {len(all_images)} full images")
+                    all_images = cropped_images
+                
+                # Log the number of images found
+                self.logger.info(f"Found {len(all_images)} images for class {class_name} in {class_dir}")
+                
+                # Check for unexpected file formats
+                unexpected_files = []
+                for img_file in all_images:
+                    if img_file.suffix.lower() not in image_extensions:
+                        unexpected_files.append(str(img_file))
+                
+                if unexpected_files:
+                    self.logger.warning(f"Found {len(unexpected_files)} unexpected file formats in {class_dir}")
+                
+                # Load all found images
+                for img_path in all_images:
+                    # Map label according to current mode
+                    mapped_label = self.label_mapper.map_label(class_id, self.dataset_type)
+                    self.samples.append((str(img_path), mapped_label, class_id))
+            else:
+                self.logger.warning(f"Class directory not found for {class_name} (tried: {possible_folders})")
     
     def _get_archive_class_name(self, class_id: int, dataset_type: DatasetType) -> str:
         """Get the actual folder name from archive structure."""
@@ -122,6 +161,49 @@ class CervicalCellDataset(Dataset):
         
         return None
     
+    def _log_dataset_statistics(self):
+        """Log comprehensive dataset statistics."""
+        if len(self.samples) == 0:
+            self.logger.warning("No samples loaded!")
+            return
+        
+        # Count samples per class
+        class_counts = {}
+        for _, mapped_label, _ in self.samples:
+            class_counts[mapped_label] = class_counts.get(mapped_label, 0) + 1
+        
+        # Count CROPPED vs full images
+        cropped_count = sum(1 for img_path, _, _ in self.samples if "CROPPED" in img_path.upper())
+        full_count = len(self.samples) - cropped_count
+        
+        # Log basic statistics
+        self.logger.info(f"✅ Dataset loaded successfully: {len(self.samples)} total images")
+        self.logger.info(f"   CROPPED images: {cropped_count} ({(cropped_count/len(self.samples)*100):.1f}%)")
+        self.logger.info(f"   Full images: {full_count} ({(full_count/len(self.samples)*100):.1f}%)")
+        
+        # Log class distribution
+        class_names = self.label_mapper.get_class_names(self.dataset_type)
+        self.logger.info("Class distribution:")
+        for class_id in sorted(class_counts.keys()):
+            count = class_counts[class_id]
+            class_name = class_names[class_id] if class_id < len(class_names) else f"Class_{class_id}"
+            percentage = (count / len(self.samples)) * 100
+            self.logger.info(f"   {class_name}: {count} ({percentage:.1f}%)")
+            
+            # Warn about low sample classes
+            if count < 100:
+                self.logger.warning(f"   ⚠️  Low sample class: {class_name} has only {count} samples")
+        
+        # Calculate and log imbalance ratio
+        max_count = max(class_counts.values())
+        min_count = min(class_counts.values())
+        imbalance_ratio = max_count / min_count if min_count > 0 else float('inf')
+        
+        if imbalance_ratio > 2.0:
+            self.logger.warning(f"   ⚠️  High class imbalance detected: {imbalance_ratio:.2f}")
+        else:
+            self.logger.info(f"   ✅ Class balance is good: {imbalance_ratio:.2f}")
+    
     def __len__(self) -> int:
         return len(self.samples)
     
@@ -139,11 +221,26 @@ class CervicalCellDataset(Dataset):
         
         # Apply transformations
         if self.transform:
-            # Convert PIL to numpy array for albumentations
-            image_np = np.array(image)
-            # Apply transforms with named argument
-            transformed = self.transform(image=image_np)
-            image = transformed['image']
+            # Check if transform is Albumentations (has __call__ expecting named arguments)
+            if hasattr(self.transform, '__call__') and hasattr(self.transform, 'transforms'):
+                # Albumentations transform - pass as named argument
+                image_np = np.array(image)
+                transformed = self.transform(image=image_np)
+                image = transformed['image']
+            else:
+                # Regular torchvision transform
+                image = self.transform(image)
+        
+        # Safety checks (MANDATORY)
+        assert isinstance(image, torch.Tensor), f"Image is not tensor, got {type(image)}"
+        assert image.shape[0] == 3, f"Channel mismatch, expected 3, got {image.shape[0]}"
+        assert image.shape[1] == 224, f"Height mismatch, expected 224, got {image.shape[1]}"
+        assert image.shape[2] == 224, f"Width mismatch, expected 224, got {image.shape[2]}"
+        assert image.dtype == torch.float32, f"Dtype mismatch, expected float32, got {image.dtype}"
+        
+        # Debug print for first batch only
+        if idx == 0:
+            print(f"DEBUG [CervicalCellDataset]: type={type(image)}, shape={image.shape}, dtype={image.dtype}")
         
         return image, mapped_label, original_label, img_path
     
@@ -167,14 +264,16 @@ class SIPaKMeDDataset(CervicalCellDataset):
         root_dir: str,
         label_mapper: LabelMapper,
         transform: Optional[Callable] = None,
-        mode: str = "train"
+        mode: str = "train",
+        use_cropped_only: bool = False
     ):
         super().__init__(
             root_dir=root_dir,
             dataset_type=DatasetType.SIPAKMED,
             label_mapper=label_mapper,
             transform=transform,
-            mode=mode
+            mode=mode,
+            use_cropped_only=use_cropped_only
         )
 
 
@@ -186,14 +285,16 @@ class HerlevDataset(CervicalCellDataset):
         root_dir: str,
         label_mapper: LabelMapper,
         transform: Optional[Callable] = None,
-        mode: str = "train"
+        mode: str = "train",
+        use_cropped_only: bool = False
     ):
         super().__init__(
             root_dir=root_dir,
             dataset_type=DatasetType.HERLEV,
             label_mapper=label_mapper,
             transform=transform,
-            mode=mode
+            mode=mode,
+            use_cropped_only=use_cropped_only
         )
 
 
@@ -298,7 +399,8 @@ class DatasetManager:
         train_ratio: float = 0.7,
         val_ratio: float = 0.15,
         test_ratio: float = 0.15,
-        random_seed: int = 42
+        random_seed: int = 42,
+        use_cropped_only: bool = False
     ):
         """
         Initialize dataset manager.
@@ -310,6 +412,7 @@ class DatasetManager:
             val_ratio: Ratio of data for validation
             test_ratio: Ratio of data for testing
             random_seed: Random seed for reproducibility
+            use_cropped_only: If True, only use CROPPED images
         """
         self.root_dir = root_dir
         self.classification_mode = classification_mode
@@ -317,6 +420,10 @@ class DatasetManager:
         self.val_ratio = val_ratio
         self.test_ratio = test_ratio
         self.random_seed = random_seed
+        self.use_cropped_only = use_cropped_only
+        
+        # Setup logging
+        self.logger = logging.getLogger(f"{__name__}.DatasetManager")
         
         # Validate ratios
         if abs(train_ratio + val_ratio + test_ratio - 1.0) > 1e-6:
@@ -337,7 +444,8 @@ class DatasetManager:
     
     def load_datasets(self):
         """Load both SIPaKMeD and Herlev datasets."""
-        print("Loading datasets...")
+        mode_str = "CROPPED only" if self.use_cropped_only else "all images"
+        self.logger.info(f"Loading datasets ({mode_str})...")
         
         try:
             # Load SIPaKMeD
@@ -345,11 +453,12 @@ class DatasetManager:
                 root_dir=self.root_dir,
                 label_mapper=self.label_mapper,
                 transform=None,
-                mode="all"
+                mode="all",
+                use_cropped_only=self.use_cropped_only
             )
-            print(f"✅ SIPaKMeD loaded: {len(self.sipakmed_dataset)} samples")
+            self.logger.info(f"✅ SIPaKMeD loaded: {len(self.sipakmed_dataset)} samples")
         except FileNotFoundError as e:
-            print(f"❌ SIPaKMeD not found: {e}")
+            self.logger.error(f"❌ SIPaKMeD not found: {e}")
             self.sipakmed_dataset = None
         
         try:
@@ -358,14 +467,16 @@ class DatasetManager:
                 root_dir=self.root_dir,
                 label_mapper=self.label_mapper,
                 transform=None,
-                mode="all"
+                mode="all",
+                use_cropped_only=self.use_cropped_only
             )
-            print(f"✅ Herlev loaded: {len(self.herlev_dataset)} samples")
+            self.logger.info(f"✅ Herlev loaded: {len(self.herlev_dataset)} samples")
         except FileNotFoundError as e:
-            print(f"❌ Herlev not found: {e}")
+            self.logger.error(f"❌ Herlev not found: {e}")
             self.herlev_dataset = None
         
         if not self.sipakmed_dataset and not self.herlev_dataset:
+            self.logger.error("No datasets found!")
             raise ValueError("No datasets found!")
     
     def create_splits(self):
@@ -563,6 +674,17 @@ class TransformDataset(Dataset):
                 image = self.transform(image=np.array(image))['image']
             else:
                 image = self.transform(image)
+        
+        # Safety checks (MANDATORY)
+        assert isinstance(image, torch.Tensor), f"Image is not tensor, got {type(image)}"
+        assert image.shape[0] == 3, f"Channel mismatch, expected 3, got {image.shape[0]}"
+        assert image.shape[1] == 224, f"Height mismatch, expected 224, got {image.shape[1]}"
+        assert image.shape[2] == 224, f"Width mismatch, expected 224, got {image.shape[2]}"
+        assert image.dtype == torch.float32, f"Dtype mismatch, expected float32, got {image.dtype}"
+        
+        # Debug print for first batch only
+        if idx == 0:
+            print(f"DEBUG [SubsetDataset]: type={type(image)}, shape={image.shape}, dtype={image.dtype}")
         
         return image, mapped_label, original_label, img_path
 

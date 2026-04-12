@@ -19,13 +19,15 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from utils.config_manager import ConfigManager, load_config
 from utils.label_mapping import LabelMapper, ClassificationMode, DatasetType
+from utils.dataset_guard import run_dataset_guard
 from datasets.dataset import create_dataset, create_dataloader, get_dataset_info
 from preprocessing.transforms import get_train_transforms, get_val_transforms
 from preprocessing.image_preprocessing import preprocess_pil_image
 from models.model_factory import create_model, ModelFactory
 from training.trainer import Trainer
 from training.cross_dataset_eval import CrossDatasetEvaluator
-from xai.grad_cam import create_xai_analyzer
+from xai.grad_cam import create_xai_analyzer as create_gradcam_analyzer
+from xai.attention_rollout import create_attention_rollout_analyzer, analyze_dataset as rollout_analyze_dataset
 from utils.visualization import create_visualizer
 
 # Set up logging
@@ -95,6 +97,9 @@ def create_datasets(config_manager: ConfigManager) -> Dict:
     # Create datasets
     datasets = {}
     
+    # Get dataset configuration
+    use_cropped_only = dataset_config.get('use_cropped_only', False)
+    
     # Training dataset
     train_dataset = create_dataset(
         root_dir=dataset_config['root_dir'],
@@ -103,6 +108,16 @@ def create_datasets(config_manager: ConfigManager) -> Dict:
         transform=train_transform,
         mode="train"
     )
+    
+    # Apply CROPPED-only filtering if needed
+    if use_cropped_only:
+        original_samples = train_dataset.samples.copy()
+        filtered_samples = [(img_path, label, orig) for img_path, label, orig in original_samples 
+                           if "CROPPED" in img_path.upper()]
+        train_dataset.samples = filtered_samples
+        logger.info(f"Filtered training dataset to {len(filtered_samples)} CROPPED images "
+                   f"(from {len(original_samples)} total)")
+    
     datasets['train'] = train_dataset
     
     # Validation dataset
@@ -113,6 +128,16 @@ def create_datasets(config_manager: ConfigManager) -> Dict:
         transform=val_transform,
         mode="val"
     )
+    
+    # Apply CROPPED-only filtering if needed
+    if use_cropped_only:
+        original_samples = val_dataset.samples.copy()
+        filtered_samples = [(img_path, label, orig) for img_path, label, orig in original_samples 
+                           if "CROPPED" in img_path.upper()]
+        val_dataset.samples = filtered_samples
+        logger.info(f"Filtered validation dataset to {len(filtered_samples)} CROPPED images "
+                   f"(from {len(original_samples)} total)")
+    
     datasets['val'] = val_dataset
     
     # Test dataset (same dataset for initial evaluation)
@@ -123,6 +148,16 @@ def create_datasets(config_manager: ConfigManager) -> Dict:
         transform=val_transform,
         mode="test"
     )
+    
+    # Apply CROPPED-only filtering if needed
+    if use_cropped_only:
+        original_samples = test_dataset.samples.copy()
+        filtered_samples = [(img_path, label, orig) for img_path, label, orig in original_samples 
+                           if "CROPPED" in img_path.upper()]
+        test_dataset.samples = filtered_samples
+        logger.info(f"Filtered test dataset to {len(filtered_samples)} CROPPED images "
+                   f"(from {len(original_samples)} total)")
+    
     datasets['test'] = test_dataset
     
     # Get dataset information
@@ -246,20 +281,19 @@ def run_xai_analysis(
     config_manager: ConfigManager,
     loaders: Dict
 ) -> Dict:
-    """Run XAI analysis."""
+    """Run XAI analysis with method selection."""
     config = config_manager.get_experiment_config()
     
     if not config.xai_enabled:
         logger.info("XAI analysis disabled")
         return {}
     
-    # Create XAI analyzer
+    # Get XAI method from config or command line
+    xai_method = getattr(config, 'xai_method', 'gradcam')
+    logger.info(f"Using XAI method: {xai_method}")
+    
+    # Create device
     device = setup_device(config.device)
-    xai_analyzer = create_xai_analyzer(
-        model=model,
-        device=device,
-        output_dir=config.paths.get('xai_outputs', 'outputs/xai')
-    )
     
     # Get class names
     if config.classification_mode == "binary":
@@ -268,15 +302,73 @@ def run_xai_analysis(
         label_mapper = LabelMapper(ClassificationMode.MULTICLASS)
         class_names = label_mapper.get_class_names(DatasetType.SIPAKMED)
     
-    # Run XAI analysis on test set
-    logger.info("Starting XAI analysis...")
-    results = xai_analyzer.analyze_dataset(
-        data_loader=loaders['test'],
-        class_names=class_names,
-        num_samples=config.xai_num_samples,
-        save_prefix=f"{config.name}_xai"
-    )
+    # Get model architecture
+    model_config = config_manager.get_model_config()
+    model_architecture = model_config.get('architecture', 'efficientnet_b0')
     
+    # Select XAI method based on model architecture
+    if xai_method.lower() == 'attention_rollout' and 'swin' in model_architecture.lower():
+        logger.info("Using Attention Rollout for Swin Transformer")
+        
+        # Create attention rollout analyzer
+        analyzer = create_attention_rollout_analyzer(model, device)
+        output_dir = os.path.join(config.paths.get('xai_outputs', 'outputs/xai'), 'attention_rollout')
+        
+        # Run analysis
+        results = rollout_analyze_dataset(
+            data_loader=loaders['test'],
+            model=model,
+            device=device,
+            save_dir=output_dir,
+            num_samples=getattr(config, 'xai_num_samples', 10)
+        )
+        
+    elif xai_method.lower() == 'gradcam' or 'efficientnet' in model_architecture.lower() or 'resnet' in model_architecture.lower():
+        logger.info("Using Grad-CAM for CNN model")
+        
+        # Create Grad-CAM analyzer
+        analyzer = create_gradcam_analyzer(
+            model=model,
+            device=device,
+            output_dir=config.paths.get('xai_outputs', 'outputs/xai')
+        )
+        
+        # Run analysis
+        results = analyzer.analyze_dataset(
+            data_loader=loaders['test'],
+            class_names=class_names,
+            num_samples=getattr(config, 'xai_num_samples', 10),
+            save_prefix=f"{config.name}_xai"
+        )
+        
+    else:
+        # Auto-select based on architecture
+        if 'swin' in model_architecture.lower():
+            logger.info("Auto-selecting Attention Rollout for Swin Transformer")
+            analyzer = create_attention_rollout_analyzer(model, device)
+            output_dir = os.path.join(config.paths.get('xai_outputs', 'outputs/xai'), 'attention_rollout')
+            results = rollout_analyze_dataset(
+                data_loader=loaders['test'],
+                model=model,
+                device=device,
+                save_dir=output_dir,
+                num_samples=getattr(config, 'xai_num_samples', 10)
+            )
+        else:
+            logger.info("Auto-selecting Grad-CAM for CNN model")
+            analyzer = create_gradcam_analyzer(
+                model=model,
+                device=device,
+                output_dir=config.paths.get('xai_outputs', 'outputs/xai')
+            )
+            results = analyzer.analyze_dataset(
+                data_loader=loaders['test'],
+                class_names=class_names,
+                num_samples=getattr(config, 'xai_num_samples', 10),
+                save_prefix=f"{config.name}_xai"
+            )
+    
+    logger.info("XAI analysis completed")
     return results
 
 
@@ -347,11 +439,13 @@ def main():
     parser.add_argument('--mode', type=str, choices=['train', 'eval', 'xai', 'all'], default='all', help='Pipeline mode')
     parser.add_argument('--binary', action='store_true', help='Force binary classification')
     parser.add_argument('--multiclass', action='store_true', help='Force multi-class classification')
-    parser.add_argument('--model', type=str, choices=['efficientnet_b0', 'resnet50', 'swin_transformer'], help='Model architecture')
+    parser.add_argument('--model', type=str, choices=['efficientnet_b0', 'resnet50', 'swin_base_patch4_window7_224'], help='Model architecture')
     parser.add_argument('--epochs', type=int, help='Number of training epochs')
     parser.add_argument('--batch-size', type=int, help='Batch size')
     parser.add_argument('--lr', type=float, help='Learning rate')
     parser.add_argument('--seed', type=int, help='Random seed')
+    parser.add_argument('--xai-method', type=str, choices=['gradcam', 'attention_rollout'], default='gradcam', help='XAI method to use')
+    parser.add_argument('--debug-dataset', action='store_true', help='Show dataset debug information')
     
     args = parser.parse_args()
     
@@ -382,6 +476,9 @@ def main():
     if args.seed:
         overrides['experiment'] = {'seed': args.seed}
     
+    if args.xai_method:
+        overrides['xai'] = {'method': args.xai_method}
+    
     if overrides:
         config_manager.update_config(overrides)
         config = config_manager.get_experiment_config()
@@ -391,6 +488,50 @@ def main():
     
     # Create experiment directories
     config_manager.create_experiment_directories()
+    
+    # 🛡️ DATASET GUARD: Run validation before training
+    logger.info("🛡️  RUNNING DATASET GUARD VALIDATION")
+    logger.info("=" * 60)
+    
+    guard_results = run_dataset_guard(config_manager.get_config())
+    
+    # Handle guard results
+    if guard_results['action'] == 'ABORT':
+        logger.error("❌ DATASET VALIDATION FAILED - TRAINING ABORTED")
+        logger.error(f"Reason: {guard_results['message']}")
+        
+        # Print detailed validation results if available
+        if 'validation_report' in guard_results and guard_results['validation_report'].get('status') != 'SKIPPED':
+            validation_report = guard_results['validation_report']
+            logger.error("Validation Details:")
+            if 'validation_results' in validation_report:
+                for check_name, result in validation_report['validation_results'].items():
+                    status = 'PASS' if result.get('passed', False) else 'FAIL'
+                    logger.error(f"  {check_name}: {status}")
+        
+        sys.exit(1)
+    
+    elif guard_results['action'] == 'PROCEED_WITH_WARNING':
+        logger.warning("⚠️  DATASET VALIDATION WARNINGS - PROCEEDING WITH CAUTION")
+        logger.warning(f"Reason: {guard_results['message']}")
+        
+        # Print warnings
+        if 'validation_report' in guard_results and guard_results['validation_report'].get('status') != 'SKIPPED':
+            validation_report = guard_results['validation_report']
+            if 'validation_results' in validation_report:
+                for check_name, result in validation_report['validation_results'].items():
+                    if not result.get('passed', False):
+                        logger.warning(f"  Warning in {check_name}")
+    
+    else:
+        logger.info("✅ DATASET VALIDATION PASSED - PROCEEDING WITH TRAINING")
+    
+    # Debug dataset information if requested
+    if args.debug_dataset:
+        dataset_name = config_manager.get_dataset_config().get('train_dataset', 'sipakmed')
+        from utils.dataset_guard import DatasetGuard
+        guard = DatasetGuard(config_manager.get_config())
+        guard.print_debug_info(dataset_name)
     
     # Set seed for reproducibility
     set_seed(config.seed)

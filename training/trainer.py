@@ -378,7 +378,9 @@ class Trainer:
         early_stopping = EarlyStopping(patience=patience)
         
         best_val_loss = float('inf')
+        best_val_f1 = 0.0
         best_epoch = 0
+        patience_counter = 0
         
         logger.info(f"Starting training for {num_epochs} epochs")
         logger.info(f"Device: {self.device}")
@@ -411,21 +413,46 @@ class Trainer:
             logger.info(f"Train Loss: {train_loss:.4f}, Train Acc: {train_metrics['accuracy']:.4f}, Train F1: {train_metrics['f1_macro']:.4f}")
             logger.info(f"Val Loss: {val_loss:.4f}, Val Acc: {val_metrics['accuracy']:.4f}, Val F1: {val_metrics['f1_macro']:.4f}")
             
-            # Save best model
-            if val_loss < best_val_loss:
-                best_val_loss = val_loss
+            # Save best model based on F1-score
+            current_val_f1 = val_metrics['f1_macro']
+            if current_val_f1 > best_val_f1:
+                best_val_f1 = current_val_f1
                 best_epoch = epoch
-                torch.save(self.model.state_dict(), os.path.join(self.output_dir, 'models', 'best_model.pth'))
-                logger.info(f"New best model saved at epoch {epoch + 1}")
+                patience_counter = 0
+                
+                # Save best model with F1-based naming
+                model_path = os.path.join(self.output_dir, 'models', 'best_swin_model.pth' if 'swin' in self.experiment_name else 'best_model.pth')
+                torch.save({
+                    'epoch': epoch + 1,
+                    'model_state_dict': self.model.state_dict(),
+                    'optimizer_state_dict': optimizer.state_dict(),
+                    'val_f1': current_val_f1,
+                    'val_loss': val_loss
+                }, model_path)
+                logger.info(f"New best model saved at epoch {epoch + 1} with F1: {current_val_f1:.4f}")
+            else:
+                patience_counter += 1
+                logger.info(f"No improvement. Patience: {patience_counter}/{patience}")
             
-            # Check early stopping
-            if early_stopping(val_loss, self.model):
+            # Check early stopping based on F1
+            if patience_counter >= patience:
+                logger.info(f"Early stopping triggered at epoch {epoch + 1}")
                 break
         
-        # Load best model
-        self.model.load_state_dict(torch.load(os.path.join(self.output_dir, 'models', 'best_model.pth')))
+        # Load best model based on experiment type
+        if 'swin' in self.experiment_name:
+            best_model_path = os.path.join(self.output_dir, 'models', 'best_swin_model.pth')
+        else:
+            best_model_path = os.path.join(self.output_dir, 'models', 'best_model.pth')
         
-        logger.info(f"Training completed. Best epoch: {best_epoch + 1}, Best val loss: {best_val_loss:.4f}")
+        if os.path.exists(best_model_path):
+            checkpoint = torch.load(best_model_path, map_location=self.device)
+            self.model.load_state_dict(checkpoint['model_state_dict'])
+            logger.info(f"Loaded best model from epoch {checkpoint['epoch']} with F1: {checkpoint['val_f1']:.4f}")
+        else:
+            logger.warning(f"Best model not found at {best_model_path}")
+        
+        logger.info(f"Training completed. Best epoch: {best_epoch + 1}, Best val F1: {best_val_f1:.4f}")
         
         # Save training history
         self.save_history()

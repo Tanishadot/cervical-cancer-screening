@@ -1,0 +1,61 @@
+# EfficientNet-B0 Baseline Training Configuration
+
+# Experiment configuration
+experiment:
+  name: "efficientnet_b0_baseline"
+  description: "EfficientNet-B0 baseline trained on SIPaKMeD (CROPPED-only) and evaluated on Herlev"
+  output_dir: "outputs/efficientnet_baseline"
+
+# Dataset configuration
+dataset:
+  root_dir: "datasets"
+  train_dataset: "sipakmed"
+  classification_mode: "binary"  # Options: "binary", "multiclass"
+  use_cropped_only: true
+  run_validation: true
+  validation_strict_mode: true
+
+# Model configuration
+model:
+  architecture: "efficientnet_b0"
+  pretrained: true
+  dropout_rate: 0.3
+
+# Training configuration
+training:
+  num_epochs: 25
+  batch_size: 32
+  learning_rate: 0.0001
+  weight_decay: 0.00001
+  early_stopping_patience: 5
+  num_workers: 4
+
+# Preprocessing configuration
+preprocessing:
+  image_size: 224
+  train_augmentations:
+    horizontal_flip_p: 0.5
+    vertical_flip_p: 0.5
+    rotation_degrees: 15
+    color_jitter:
+      brightness: 0.2
+      contrast: 0.2
+      saturation: 0.2
+      hue: 0.1
+
+# Evaluation configuration
+evaluation:
+  metrics:
+    - "accuracy"
+    - "precision"
+    - "recall"
+    - "f1_score"
+    - "auc"  # Only for binary classification
+  save_confusion_matrix: true
+  save_training_curves: true
+
+# Cross-dataset evaluation
+cross_dataset:
+  train_on: "sipakmed"
+  test_on: "herlev"
+  evaluate_generalization: true

@@ -1,0 +1,105 @@
+# Optimized EfficientNet-B0 Configuration
+# Target: 85-95% validation accuracy with strong generalization
+
+# Experiment configuration
+experiment:
+  name: "efficientnet_b0_optimized"
+  description: "Optimized EfficientNet-B0 with advanced techniques for 85-95% accuracy"
+  output_dir: "outputs/efficientnet_optimized"
+
+# Dataset configuration
+dataset:
+  root_dir: "datasets"
+  train_dataset: "sipakmed"
+  classification_mode: "binary"  # Options: "binary", "multiclass"
+  use_cropped_only: true
+  run_validation: true
+  validation_strict_mode: true
+
+# Enhanced model configuration
+model:
+  architecture: "efficientnet_b0"
+  pretrained: true
+  dropout_rate: 0.4  # Higher dropout for better regularization
+
+# Optimized training configuration
+training:
+  num_epochs: 30
+  batch_size: 16  # Smaller batch for better generalization
+  learning_rate: 0.0001
+  weight_decay: 0.00001
+  early_stopping_patience: 5
+  num_workers: 4
+  
+  # Advanced optimization techniques
+  label_smoothing: 0.1  # Prevents overconfidence
+  unfreeze_epoch: 5  # Progressive unfreezing strategy
+  
+  # Learning rate scheduling
+  scheduler:
+    type: "ReduceLROnPlateau"
+    factor: 0.5
+    patience: 2
+
+# Enhanced preprocessing configuration
+preprocessing:
+  image_size: 224
+  
+  # Advanced training augmentations
+  train_augmentations:
+    resize_size: 256
+    center_crop: 224
+    horizontal_flip_p: 0.5
+    vertical_flip_p: 0.5
+    rotation_degrees: 15
+    random_resized_crop:
+      scale: [0.9, 1.0]
+      ratio: [0.75, 1.33]
+    color_jitter:
+      brightness: 0.2
+      contrast: 0.2
+      saturation: 0.2
+      hue: 0.1
+    gaussian_blur:
+      p: 0.2
+      kernel_size: 3
+      sigma_range: [0.1, 1.5]
+
+# Evaluation configuration
+evaluation:
+  metrics:
+    - "accuracy"
+    - "precision"
+    - "recall"
+    - "f1_score"
+    - "auc"  # Only for binary classification
+  save_confusion_matrix: true
+  save_training_curves: true
+  target_accuracy_range: [85, 95]  # Target range
+
+# Cross-dataset evaluation
+cross_dataset:
+  train_on: "sipakmed"
+  test_on: "herlev"
+  evaluate_generalization: true
+  max_generalization_gap: 0.2  # 20% maximum acceptable gap
+
+# Regularization settings
+regularization:
+  weight_decay: 0.00001
+  dropout_rate: 0.4
+  label_smoothing: 0.1
+  gradient_clipping: 1.0
+
+# Progressive training strategy
+progressive_training:
+  freeze_backbone_epochs: 5
+  unfreeze_strategy: "all_layers"
+  lr_reduction_after_unfreeze: 0.5
+
+# Performance monitoring
+monitoring:
+  log_interval: 50
+  save_best_model: true
+  early_stopping_metric: "combined_score"  # accuracy + f1_score
+  target_checkpoints: [85, 90, 95]  # Log when these are achieved

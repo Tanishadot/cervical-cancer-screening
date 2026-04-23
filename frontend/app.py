@@ -286,61 +286,83 @@ def create_visual_analysis(result: Dict):
             st.image(masks['background'], caption="Background Mask", width=200)
     
     with col2:
-        st.markdown("### Grad-CAM Heatmap")
+        st.markdown("### Model Attention")
         
-        try:
-            # Get original image for blending
-            original = st.session_state.get('current_image')
-            if original is None:
-                st.warning("No image available for Grad-CAM overlay")
-                return
-            
-            if isinstance(original, Image.Image):
-                original = np.array(original)
-            
-            # Resize to match Grad-CAM if needed
-            target_size = (grad_cam.shape[1], grad_cam.shape[0])
-            if original.shape[:2] != target_size:
-                original_resized = cv2.resize(original, target_size)
-            else:
-                original_resized = original
-            
-            # Normalize Grad-CAM
-            if grad_cam.max() > 0:
+        # Check if Grad-CAM has meaningful values
+        if grad_cam is not None and grad_cam.max() > 0:
+            try:
+                # Get original image for blending
+                original = st.session_state.get('current_image')
+                if original is None:
+                    st.warning("No image available for Grad-CAM overlay")
+                    return
+                
+                if isinstance(original, Image.Image):
+                    original = np.array(original)
+                
+                # Resize to match Grad-CAM if needed
+                target_size = (grad_cam.shape[1], grad_cam.shape[0])
+                if original.shape[:2] != target_size:
+                    original_resized = cv2.resize(original, target_size)
+                else:
+                    original_resized = original
+                
+                # Normalize Grad-CAM
                 grad_cam_norm = grad_cam / grad_cam.max()
+                
+                # Apply colormap
+                grad_cam_colored = plt.cm.jet(grad_cam_norm)[:, :, :3]
+                grad_cam_colored = (grad_cam_colored * 255).astype(np.uint8)
+                
+                # Normalize original image
+                if original_resized.max() > 1.0:
+                    original_norm = original_resized / 255.0
+                else:
+                    original_norm = original_resized
+                
+                # Blend with original
+                grad_cam_overlay = 0.6 * grad_cam_colored + 0.4 * original_norm
+                grad_cam_overlay = (grad_cam_overlay * 255).astype(np.uint8)
+                
+                st.image(grad_cam_overlay, caption="Grad-CAM Attention Heatmap")
+                
+                # Attention statistics
+                st.markdown("**Attention Analysis:**")
+                attention_mean = np.mean(grad_cam_norm)
+                attention_max = np.max(grad_cam_norm)
+                attention_coverage = np.sum(grad_cam_norm > 0.1) / grad_cam_norm.size if grad_cam_norm.size > 0 else 0
+                
+                st.write(f"- Mean Attention: {attention_mean:.3f}")
+                st.write(f"- Peak Attention: {attention_max:.3f}")
+                st.write(f"- Attention Coverage: {attention_coverage:.1%}")
+                
+            except Exception as e:
+                st.error(f"Error creating Grad-CAM overlay: {e}")
+                st.info("Displaying Grad-CAM separately")
+                st.image(grad_cam, caption="Grad-CAM Heatmap", width=400)
+        else:
+            # Grad-CAM failed or has no meaningful values
+            st.warning("⚠️ Grad-CAM heatmap not available")
+            st.info("Model attention could not be computed. Using segmentation-based feature importance instead.")
+            
+            # Show segmentation-based importance
+            st.markdown("**Segmentation-Based Importance:**")
+            nucleus_area = np.sum(masks['nucleus'] > 0)
+            cytoplasm_area = np.sum(masks['cytoplasm'] > 0)
+            background_area = np.sum(masks['background'] > 0)
+            total_area = nucleus_area + cytoplasm_area + background_area
+            
+            if total_area > 0:
+                st.write(f"- Nucleus region: {nucleus_area/total_area:.1%}")
+                st.write(f"- Cytoplasm region: {cytoplasm_area/total_area:.1%}")
+                st.write(f"- Background region: {background_area/total_area:.1%}")
+                
+                # Show which region is dominant
+                areas = {'Nucleus': nucleus_area, 'Cytoplasm': cytoplasm_area, 'Background': background_area}
+                dominant_region = max(areas, key=areas.get)
+                st.write(f"- **Dominant region: {dominant_region}**")
             else:
-                grad_cam_norm = grad_cam
-            
-            # Apply colormap
-            grad_cam_colored = plt.cm.jet(grad_cam_norm)[:, :, :3]
-            grad_cam_colored = (grad_cam_colored * 255).astype(np.uint8)
-            
-            # Normalize original image
-            if original_resized.max() > 1.0:
-                original_norm = original_resized / 255.0
-            else:
-                original_norm = original_resized
-            
-            # Blend with original
-            grad_cam_overlay = 0.6 * grad_cam_colored + 0.4 * original_norm
-            grad_cam_overlay = (grad_cam_overlay * 255).astype(np.uint8)
-            
-            st.image(grad_cam_overlay, caption="Grad-CAM Attention Heatmap")
-            
-            # Attention statistics
-            st.markdown("**Attention Analysis:**")
-            attention_mean = np.mean(grad_cam_norm)
-            attention_max = np.max(grad_cam_norm)
-            attention_coverage = np.sum(grad_cam_norm > 0.1) / grad_cam_norm.size if grad_cam_norm.size > 0 else 0
-            
-            st.write(f"- Mean Attention: {attention_mean:.3f}")
-            st.write(f"- Peak Attention: {attention_max:.3f}")
-            st.write(f"- Attention Coverage: {attention_coverage:.1%}")
-            
-        except Exception as e:
-            st.error(f"Error creating Grad-CAM overlay: {e}")
-            st.info("Displaying Grad-CAM separately")
-            st.image(grad_cam, caption="Grad-CAM Heatmap", width=400)
+                st.warning("No regions detected for importance analysis")
 
 
 def create_clinical_reasoning(result: Dict):
@@ -358,9 +380,31 @@ def create_clinical_reasoning(result: Dict):
         </div>
         """, unsafe_allow_html=True)
         
-        st.write(f"**Dominant Feature:** {bethesda['dominant_feature'].title()}")
+        # Get dominant feature from fusion result
+        dominant = result.get('feature_fusion', {}).get('dominant_feature', 'model')
+        if dominant == 'model':
+            dominant_display = "CNN Model"
+        elif dominant == 'nuclear':
+            dominant_display = "Nuclear Features"
+        elif dominant == 'cytoplasmic':
+            dominant_display = "Cytoplasmic Features"
+        elif dominant == 'background':
+            dominant_display = "Background Features"
+        else:
+            dominant_display = dominant.title()
+        
+        st.write(f"**Dominant Feature:** {dominant_display}")
         st.write(f"**Clinical Score:** {bethesda['clinical_score']:.3f}")
         st.write(f"**Confidence Level:** {bethesda['confidence']:.3f}")
+        
+        # Decision type
+        decision_type = bethesda.get('decision_type', 'model-based')
+        if decision_type == 'rule-based':
+            st.write(f"**Decision Type:** 📋 Rule-based (Parabasal Override)")
+            if bethesda.get('parabasal_override', False):
+                st.info("✅ Parabasal cell override applied - classified as NILM")
+        else:
+            st.write(f"**Decision Type:** 🤖 Model-based")
         
         # Risk indicator
         risk_color = {
@@ -388,6 +432,13 @@ def create_clinical_reasoning(result: Dict):
         features = bethesda['feature_scores']
         for feature, score in features.items():
             st.write(f"- {feature.title()}: {score:.3f}")
+        
+        # Add feature scores comparison if available
+        if 'feature_fusion' in result and 'feature_scores' in result['feature_fusion']:
+            st.markdown("**Raw Feature Scores:**")
+            raw_scores = result['feature_fusion']['feature_scores']
+            for feature, score in raw_scores.items():
+                st.write(f"- {feature.title()}: {score:.3f}")
 
 
 def create_summary_dashboard(result: Dict):
@@ -431,6 +482,11 @@ def create_summary_dashboard(result: Dict):
             dominant_display = "Background Features"
         else:
             dominant_display = dominant.title()
+        
+        # Add decision type indicator
+        decision_type = result.get('bethesda_classification', {}).get('decision_type', 'model-based')
+        if decision_type == 'rule-based':
+            dominant_display += " 📋"
         
         st.metric(
             "Key Feature",

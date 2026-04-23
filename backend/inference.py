@@ -57,14 +57,25 @@ class ClinicalReasoningEngine:
             cytoplasmic_features = fused_result['extracted_features']['cytoplasmic']
             background_features = fused_result['extracted_features']['background']
             
-            # Determine Bethesda class
-            bethesda_class, bethesda_full, risk_level = self._determine_class(final_score)
+            # Check for parabasal override rule BEFORE model classification
+            is_parabasal_override = self._check_parabasal_override(nuclear_features, cytoplasmic_features, background_features)
             
-            # Generate clinical reasoning
-            reasoning = self._generate_reasoning(
-                nuclear_features, cytoplasmic_features, background_features, 
-                bethesda_class, final_score
-            )
+            if is_parabasal_override:
+                # Force NILM classification for parabasal cells
+                bethesda_class = 'NILM'
+                bethesda_full = 'Negative for Intraepithelial Lesion or Malignancy'
+                risk_level = 'Low Risk - Normal findings'
+                final_score = 0.2  # Low score for NILM
+                reasoning = self._generate_parabasal_reasoning(nuclear_features, cytoplasmic_features, background_features)
+                decision_type = 'rule-based'
+            else:
+                # Determine Bethesda class normally
+                bethesda_class, bethesda_full, risk_level = self._determine_class(final_score)
+                reasoning = self._generate_reasoning(
+                    nuclear_features, cytoplasmic_features, background_features, 
+                    bethesda_class, final_score
+                )
+                decision_type = 'model-based'
             
             # Calculate confidence
             confidence = self._calculate_confidence(final_score, bethesda_class)
@@ -82,7 +93,9 @@ class ClinicalReasoningEngine:
                     'background': background_score
                 },
                 'confidence': confidence,
-                'dominant_feature': fused_result['dominant_feature']
+                'dominant_feature': fused_result['dominant_feature'],
+                'decision_type': decision_type,
+                'parabasal_override': is_parabasal_override
             }
             
         except Exception as e:
@@ -166,6 +179,41 @@ class ClinicalReasoningEngine:
             reasoning_parts.append("No significant pathological changes detected")
         
         return "; ".join(reasoning_parts) if reasoning_parts else "Multiple subtle features detected"
+    
+    def _check_parabasal_override(self, nuclear: Dict, cytoplasmic: Dict, background: Dict) -> bool:
+        """Check if parabasal override should be applied."""
+        try:
+            # Get cell maturity ratio
+            cell_maturity_ratio = cytoplasmic.get('cell_maturity_ratio', 1.0)
+            
+            # Get key features
+            perinuclear_halo = cytoplasmic.get('perinuclear_halo', 0)
+            background_debris = background.get('background_debris', 0)
+            
+            # Parabasal override criteria (stricter than general parabasal detection)
+            return (
+                cell_maturity_ratio < 0.3 and  # Very immature cells
+                perinuclear_halo < 0.3 and      # No perinuclear halo
+                background_debris < 0.3         # Clean background
+            )
+        except Exception:
+            return False
+    
+    def _generate_parabasal_reasoning(self, nuclear: Dict, cytoplasmic: Dict, background: Dict) -> str:
+        """Generate reasoning for parabasal override."""
+        reasoning_parts = []
+        
+        cell_maturity_ratio = cytoplasmic.get('cell_maturity_ratio', 1.0)
+        perinuclear_halo = cytoplasmic.get('perinuclear_halo', 0)
+        background_debris = background.get('background_debris', 0)
+        
+        reasoning_parts.append("Parabasal cell override applied")
+        reasoning_parts.append(f"Very low cell maturity ratio ({cell_maturity_ratio:.2f})")
+        reasoning_parts.append(f"Minimal perinuclear halo ({perinuclear_halo:.3f})")
+        reasoning_parts.append(f"Clean background ({background_debris:.3f})")
+        reasoning_parts.append("Immature normal cells - classified as NILM")
+        
+        return "; ".join(reasoning_parts)
     
     def _is_parabasal_cell(self, nuclear: Dict, cytoplasmic: Dict, background: Dict) -> bool:
         """Check if this is a parabasal cell (immature normal cell)."""

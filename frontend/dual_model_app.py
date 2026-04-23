@@ -24,7 +24,7 @@ sys.path.append(str(Path(__file__).parent.parent))
 from backend.dual_model_inference import create_dual_inference_engine
 from backend.feature_extraction import CytologyFeatureExtractor
 
-# Configure Streamlit
+# Configure Streamlit - MUST be the first Streamlit command
 st.set_page_config(
     page_title="Dual Model Clinical Cytology Classification",
     page_icon="🔬",

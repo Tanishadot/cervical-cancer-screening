@@ -24,13 +24,7 @@ sys.path.append(str(Path(__file__).parent.parent))
 from backend.inference import create_inference_engine
 from backend.feature_extraction import CytologyFeatureExtractor
 
-# Configure Streamlit
-st.set_page_config(
-    page_title="Clinical Cytology Classification",
-    page_icon="🔬",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
+# Note: st.set_page_config() is called in the main entry file to avoid duplicate calls
 
 # Custom CSS
 st.markdown("""

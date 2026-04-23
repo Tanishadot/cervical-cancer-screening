@@ -180,12 +180,16 @@ def create_feature_analysis(result: Dict):
     # Create feature contribution chart
     st.markdown("### Feature Contribution Analysis")
     
+    # Safely access feature_fusion
+    fusion = result.get("feature_fusion", {})
+    contrib = fusion.get("feature_contributions", {})
+    
     feature_names = ['Model', 'Nuclear', 'Cytoplasmic', 'Background']
     feature_values = [
-        result['feature_fusion']['feature_contributions']['model'],
-        result['feature_fusion']['feature_contributions']['nuclear'],
-        result['feature_fusion']['feature_contributions']['cytoplasmic'],
-        result['feature_fusion']['feature_contributions']['background']
+        contrib.get('model', 0.0),
+        contrib.get('nuclear', 0.0),
+        contrib.get('cytoplasmic', 0.0),
+        contrib.get('background', 0.0)
     ]
     
     fig = go.Figure(data=[
@@ -374,8 +378,9 @@ def create_clinical_reasoning(result: Dict):
         </div>
         """, unsafe_allow_html=True)
         
-        # Get dominant feature from fusion result
-        dominant = result.get('feature_fusion', {}).get('dominant_feature', 'model')
+        # Safely get dominant feature from fusion result
+        fusion = result.get("feature_fusion", {})
+        dominant = fusion.get("dominant_feature", "background")
         if dominant == 'model':
             dominant_display = "CNN Model"
         elif dominant == 'nuclear':
@@ -384,6 +389,10 @@ def create_clinical_reasoning(result: Dict):
             dominant_display = "Cytoplasmic Features"
         elif dominant == 'background':
             dominant_display = "Background Features"
+        elif dominant == 'cnn':
+            dominant_display = "CNN Features"
+        elif dominant == 'swin':
+            dominant_display = "Swin Features"
         else:
             dominant_display = dominant.title()
         
@@ -428,9 +437,10 @@ def create_clinical_reasoning(result: Dict):
             st.write(f"- {feature.title()}: {score:.3f}")
         
         # Add feature scores comparison if available
-        if 'feature_fusion' in result and 'feature_scores' in result['feature_fusion']:
+        fusion = result.get("feature_fusion", {})
+        if 'feature_scores' in fusion:
             st.markdown("**Raw Feature Scores:**")
-            raw_scores = result['feature_fusion']['feature_scores']
+            raw_scores = fusion['feature_scores']
             for feature, score in raw_scores.items():
                 st.write(f"- {feature.title()}: {score:.3f}")
 
@@ -463,9 +473,11 @@ def create_summary_dashboard(result: Dict):
         )
     
     with col3:
-        # Get actual dominant feature from fusion result
-        dominant = result.get('feature_fusion', {}).get('dominant_feature', 'model')
-        # Replace "model" with more descriptive name
+        # Safely get dominant feature from fusion result
+        fusion = result.get("feature_fusion", {})
+        dominant = fusion.get("dominant_feature", "background")
+        
+        # Replace with more descriptive name
         if dominant == 'model':
             dominant_display = "CNN Model"
         elif dominant == 'nuclear':
@@ -474,6 +486,10 @@ def create_summary_dashboard(result: Dict):
             dominant_display = "Cytoplasmic Features"
         elif dominant == 'background':
             dominant_display = "Background Features"
+        elif dominant == 'cnn':
+            dominant_display = "CNN Features"
+        elif dominant == 'swin':
+            dominant_display = "Swin Features"
         else:
             dominant_display = dominant.title()
         

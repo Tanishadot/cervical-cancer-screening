@@ -188,6 +188,9 @@ class DualModelInferenceEngine:
                 }
             }
             
+            # Ensure feature_fusion is always present
+            final_result = self.ensure_feature_fusion(final_result)
+            
             logger.info(f"Dual model inference completed: {bethesda_result['bethesda_class']} with {bethesda_result['confidence']:.3f} confidence")
             return final_result
             
@@ -274,9 +277,47 @@ class DualModelInferenceEngine:
             logger.error(f"Error aligning explanations with features: {e}")
             return extracted_features
     
+    def ensure_feature_fusion(self, result: Dict) -> Dict:
+        """Ensure feature_fusion is always present in result."""
+        if "feature_fusion" not in result:
+            # Extract available scores from result
+            dual_pred = result.get("dual_model_prediction", {})
+            fusion_info = dual_pred.get("fusion", {})
+            
+            # Get feature scores from aligned features
+            aligned_features = result.get("aligned_features", {})
+            nuclear_score = aligned_features.get("nuclear", {}).get("overall_nuclear_score", 0.0)
+            cytoplasmic_score = aligned_features.get("cytoplasmic", {}).get("overall_cytoplasmic_score", 0.0)
+            background_score = aligned_features.get("background", {}).get("overall_background_score", 0.0)
+            
+            # Get model scores
+            cnn_weight = fusion_info.get("cnn_weight", 0.5)
+            swin_weight = fusion_info.get("swin_weight", 0.5)
+            model_confidence = dual_pred.get("final_confidence", 0.5)
+            
+            result["feature_fusion"] = {
+                "feature_contributions": {
+                    "cnn": float(cnn_weight),
+                    "swin": float(swin_weight),
+                    "nuclear": float(nuclear_score),
+                    "cytoplasmic": float(cytoplasmic_score),
+                    "background": float(background_score),
+                    "model": float(model_confidence)
+                },
+                "fusion_method": "fallback",
+                "dominant_feature": result.get("summary", {}).get("dominant_region", "background"),
+                "feature_scores": {
+                    "nuclear": float(nuclear_score),
+                    "cytoplasmic": float(cytoplasmic_score),
+                    "background": float(background_score),
+                    "model": float(model_confidence)
+                }
+            }
+        return result
+    
     def _get_default_result(self) -> Dict:
         """Return default result when inference fails."""
-        return {
+        default_result = {
             'image_info': {'shape': (224, 224, 3), 'dtype': 'uint8'},
             'extracted_features': self.feature_extractor._get_default_features(),
             'dual_model_prediction': {
@@ -313,6 +354,9 @@ class DualModelInferenceEngine:
                 'model_weights': {'cnn_weight': 0.5, 'swin_weight': 0.5}
             }
         }
+        
+        # Ensure feature_fusion is present
+        return self.ensure_feature_fusion(default_result)
 
 
 def create_dual_inference_engine(cnn_model_path: Optional[str] = None, 

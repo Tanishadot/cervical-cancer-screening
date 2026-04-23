@@ -317,11 +317,32 @@ def create_dual_model_summary_dashboard(result: Dict):
         )
     
     with col3:
-        dominant_region = result['summary']['dominant_region']
-        region_display = dominant_region.title()
+        # Safely get dominant feature from fusion result
+        fusion = result.get("feature_fusion", {})
+        dominant = fusion.get("dominant_feature", "background")
+        if dominant == 'model':
+            dominant_display = "CNN Model"
+        elif dominant == 'nuclear':
+            dominant_display = "Nuclear Features"
+        elif dominant == 'cytoplasmic':
+            dominant_display = "Cytoplasmic Features"
+        elif dominant == 'background':
+            dominant_display = "Background Features"
+        elif dominant == 'cnn':
+            dominant_display = "CNN Features"
+        elif dominant == 'swin':
+            dominant_display = "Swin Features"
+        else:
+            dominant_display = dominant.title()
+        
+        # Add decision type indicator
+        decision_type = result.get('bethesda_classification', {}).get('decision_type', 'dual-model-based')
+        if decision_type == 'rule-based':
+            dominant_display += " 📋"
+        
         st.metric(
-            "Dominant Region",
-            region_display,
+            "Key Feature",
+            dominant_display,
             delta=None,
             delta_color="normal"
         )

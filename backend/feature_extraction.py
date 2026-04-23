@@ -45,7 +45,10 @@ class CytologyFeatureExtractor:
             
             # Extract features for each region
             nuclear_features = self._extract_nuclear_features(image, nucleus_mask, gray, hsv)
-            cytoplasmic_features = self._extract_cytoplasmic_features(image, cytoplasm_mask, gray, hsv)
+            cytoplasmic_features = self._extract_cytoplasmic_features(
+                image, cytoplasm_mask, gray, hsv, 
+                nuclear_features['nucleus_area']
+            )
             background_features = self._extract_background_features(image, background_mask, gray, hsv)
             
             # Combine features
@@ -118,6 +121,9 @@ class CytologyFeatureExtractor:
         nucleus_pixels = gray[coords]
         nucleus_hsv = hsv[coords]
         
+        # Calculate nuclear area for maturity assessment
+        nucleus_area = np.sum(mask > 0)
+        
         # Nuclear features
         features = {
             'nuclear_enlargement': self._calculate_nuclear_size(mask, image.shape),
@@ -125,6 +131,7 @@ class CytologyFeatureExtractor:
             'nuclear_contours': self._calculate_contour_irregularity(mask),
             'nc_ratio': self._calculate_nc_ratio(mask, image.shape),
             'hyperchromasia': self._calculate_hyperchromasia(nucleus_hsv),
+            'nucleus_area': nucleus_area,
             'overall_nuclear_score': 0.0  # Will be calculated
         }
         
@@ -140,7 +147,7 @@ class CytologyFeatureExtractor:
         return features
     
     def _extract_cytoplasmic_features(self, image: np.ndarray, mask: np.ndarray,
-                                    gray: np.ndarray, hsv: np.ndarray) -> Dict:
+                                    gray: np.ndarray, hsv: np.ndarray, nucleus_area: int = 0) -> Dict:
         """Extract cytoplasmic features."""
         if np.sum(mask) == 0:
             return self._get_default_cytoplasmic_features()
@@ -152,12 +159,20 @@ class CytologyFeatureExtractor:
         cytoplasm_pixels = gray[coords]
         cytoplasm_hsv = hsv[coords]
         
+        # Calculate cytoplasm area for maturity assessment
+        cytoplasm_area = np.sum(mask > 0)
+        
+        # Calculate cell maturity ratio
+        cell_maturity_ratio = cytoplasm_area / nucleus_area if nucleus_area > 0 else 1.0
+        
         features = {
             'perinuclear_halo': self._calculate_perinuclear_halo(mask, gray),
             'keratinization': self._calculate_keratinization(cytoplasm_hsv),
             'cytoplasmic_texture': self._calculate_cytoplasmic_texture(cytoplasm_pixels),
             'cell_maturity': self._calculate_cell_maturity(cytoplasm_hsv),
             'koilocytosis_score': self._calculate_koilocytosis(mask, gray),
+            'cytoplasm_area': cytoplasm_area,
+            'cell_maturity_ratio': cell_maturity_ratio,
             'overall_cytoplasmic_score': 0.0  # Will be calculated
         }
         
@@ -399,6 +414,7 @@ class CytologyFeatureExtractor:
             'nuclear_contours': 0.0,
             'nc_ratio': 0.0,
             'hyperchromasia': 0.0,
+            'nucleus_area': 0,
             'overall_nuclear_score': 0.0
         }
     
@@ -410,6 +426,8 @@ class CytologyFeatureExtractor:
             'cytoplasmic_texture': 0.0,
             'cell_maturity': 0.0,
             'koilocytosis_score': 0.0,
+            'cytoplasm_area': 0,
+            'cell_maturity_ratio': 1.0,
             'overall_cytoplasmic_score': 0.0
         }
     

@@ -107,6 +107,15 @@ class ClinicalReasoningEngine:
         """Generate clinical reasoning based on features."""
         reasoning_parts = []
         
+        # Check for parabasal cells (immature normal cells)
+        is_parabasal = self._is_parabasal_cell(nuclear, cytoplasmic, background)
+        
+        if is_parabasal and bethesda_class == 'NILM':
+            reasoning_parts.append("Immature parabasal cells - normal finding")
+            reasoning_parts.append("Low cytoplasmic texture and minimal perinuclear halo")
+            reasoning_parts.append("Clean background with no significant debris")
+            return "; ".join(reasoning_parts)
+        
         # Nuclear-based reasoning
         if nuclear['hyperchromasia'] > 0.5:
             reasoning_parts.append("Hyperchromasia (dense chromatin) present")
@@ -124,6 +133,13 @@ class ClinicalReasoningEngine:
             reasoning_parts.append("Keratinization (dyskeratosis) present")
         if cytoplasmic['koilocytosis_score'] > 0.6:
             reasoning_parts.append("Strong koilocytosis features")
+        
+        # Cell maturity reasoning
+        if 'cell_maturity_ratio' in cytoplasmic:
+            if cytoplasmic['cell_maturity_ratio'] < 2.0:
+                reasoning_parts.append("Low cell maturity ratio - immature cells")
+            elif cytoplasmic['cell_maturity_ratio'] > 4.0:
+                reasoning_parts.append("High cell maturity ratio - mature cells")
         
         # Background-based reasoning
         if background['background_debris'] > 0.4:
@@ -150,6 +166,33 @@ class ClinicalReasoningEngine:
             reasoning_parts.append("No significant pathological changes detected")
         
         return "; ".join(reasoning_parts) if reasoning_parts else "Multiple subtle features detected"
+    
+    def _is_parabasal_cell(self, nuclear: Dict, cytoplasmic: Dict, background: Dict) -> bool:
+        """Check if this is a parabasal cell (immature normal cell)."""
+        try:
+            # Parabasal cells have:
+            # - Low cytoplasmic texture
+            # - Low perinuclear halo
+            # - Low background debris
+            # - Low nuclear enlargement
+            # - Low chromatin density
+            
+            cytoplasm_texture = cytoplasmic.get('cytoplasmic_texture', 0)
+            perinuclear_halo = cytoplasmic.get('perinuclear_halo', 0)
+            background_debris = background.get('background_debris', 0)
+            nuclear_enlargement = nuclear.get('nuclear_enlargement', 0)
+            chromatin_density = nuclear.get('chromatin_density', 0)
+            
+            # Parabasal cell criteria
+            return (
+                cytoplasm_texture < 0.3 and
+                perinuclear_halo < 0.3 and
+                background_debris < 0.3 and
+                nuclear_enlargement < 0.4 and
+                chromatin_density < 0.4
+            )
+        except Exception:
+            return False
     
     def _calculate_confidence(self, score: float, bethesda_class: str) -> float:
         """Calculate confidence based on score and class."""

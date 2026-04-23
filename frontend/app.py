@@ -225,60 +225,122 @@ def create_visual_analysis(result: Dict):
     with col1:
         st.markdown("### Region Segmentation")
         
-        # Create colored segmentation overlay
-        segmentation = np.zeros((224, 224, 3), dtype=np.uint8)
-        segmentation[masks['nucleus'] > 0] = [255, 0, 0]  # Red for nucleus
-        segmentation[masks['cytoplasm'] > 0] = [0, 255, 0]  # Green for cytoplasm
-        segmentation[masks['background'] > 0] = [0, 0, 255]  # Blue for background
-        
-        # Blend with original image
-        original = np.array(st.session_state.get('current_image', np.zeros((224, 224, 3))))
-        if original.max() > 1.0:
-            original = original / 255.0
-        
-        alpha = 0.6
-        overlay = alpha * segmentation / 255.0 + (1 - alpha) * original
-        overlay = (overlay * 255).astype(np.uint8)
-        
-        st.image(overlay, caption="Region Segmentation (Red: Nucleus, Green: Cytoplasm, Blue: Background)")
-        
-        # Region statistics
-        st.markdown("**Region Statistics:**")
-        nucleus_area = np.sum(masks['nucleus'] > 0)
-        cytoplasm_area = np.sum(masks['cytoplasm'] > 0)
-        background_area = np.sum(masks['background'] > 0)
-        total_area = nucleus_area + cytoplasm_area + background_area
-        
-        st.write(f"- Nucleus: {nucleus_area/total_area:.1%} of image")
-        st.write(f"- Cytoplasm: {cytoplasm_area/total_area:.1%} of image")
-        st.write(f"- Background: {background_area/total_area:.1%} of image")
+        try:
+            # Get original image from session state
+            original = st.session_state.get('current_image')
+            if original is None:
+                st.warning("No image available for segmentation overlay")
+                return
+            
+            # Ensure original is numpy array and proper shape
+            if isinstance(original, Image.Image):
+                original = np.array(original)
+            
+            # Resize to match masks if needed
+            target_size = (masks['nucleus'].shape[1], masks['nucleus'].shape[0])
+            if original.shape[:2] != target_size:
+                original_resized = cv2.resize(original, target_size)
+            else:
+                original_resized = original
+            
+            # Create colored segmentation overlay
+            segmentation = np.zeros((*target_size, 3), dtype=np.uint8)
+            segmentation[masks['nucleus'] > 0] = [255, 0, 0]  # Red for nucleus
+            segmentation[masks['cytoplasm'] > 0] = [0, 255, 0]  # Green for cytoplasm
+            segmentation[masks['background'] > 0] = [0, 0, 255]  # Blue for background
+            
+            # Normalize original image to [0, 1]
+            if original_resized.max() > 1.0:
+                original_norm = original_resized / 255.0
+            else:
+                original_norm = original_resized
+            
+            # Blend with original image
+            alpha = 0.6
+            overlay = alpha * segmentation / 255.0 + (1 - alpha) * original_norm
+            overlay = (overlay * 255).astype(np.uint8)
+            
+            st.image(overlay, caption="Region Segmentation (Red: Nucleus, Green: Cytoplasm, Blue: Background)")
+            
+            # Region statistics
+            st.markdown("**Region Statistics:**")
+            nucleus_area = np.sum(masks['nucleus'] > 0)
+            cytoplasm_area = np.sum(masks['cytoplasm'] > 0)
+            background_area = np.sum(masks['background'] > 0)
+            total_area = nucleus_area + cytoplasm_area + background_area
+            
+            if total_area > 0:
+                st.write(f"- Nucleus: {nucleus_area/total_area:.1%} of image")
+                st.write(f"- Cytoplasm: {cytoplasm_area/total_area:.1%} of image")
+                st.write(f"- Background: {background_area/total_area:.1%} of image")
+            else:
+                st.warning("No regions detected")
+                
+        except Exception as e:
+            st.error(f"Error creating segmentation overlay: {e}")
+            st.info("Displaying segmentation masks separately")
+            
+            # Display masks separately if overlay fails
+            st.image(masks['nucleus'], caption="Nucleus Mask", width=200)
+            st.image(masks['cytoplasm'], caption="Cytoplasm Mask", width=200)
+            st.image(masks['background'], caption="Background Mask", width=200)
     
     with col2:
         st.markdown("### Grad-CAM Heatmap")
         
-        # Normalize Grad-CAM
-        if grad_cam.max() > 0:
-            grad_cam_norm = grad_cam / grad_cam.max()
-        else:
-            grad_cam_norm = grad_cam
-        
-        # Apply colormap
-        grad_cam_colored = plt.cm.jet(grad_cam_norm)[:, :, :3]
-        grad_cam_colored = (grad_cam_colored * 255).astype(np.uint8)
-        
-        # Blend with original
-        grad_cam_overlay = 0.6 * grad_cam_colored + 0.4 * original
-        grad_cam_overlay = (grad_cam_overlay * 255).astype(np.uint8)
-        
-        st.image(grad_cam_overlay, caption="Grad-CAM Attention Heatmap")
-        
-        # Attention statistics
-        st.markdown("**Attention Analysis:**")
-        attention_mean = np.mean(grad_cam_norm)
-        attention_max = np.max(grad_cam_norm)
-        st.write(f"- Mean Attention: {attention_mean:.3f}")
-        st.write(f"- Peak Attention: {attention_max:.3f}")
-        st.write(f"- Attention Coverage: {np.sum(grad_cam_norm > 0.1)/grad_cam_norm.size:.1%}")
+        try:
+            # Get original image for blending
+            original = st.session_state.get('current_image')
+            if original is None:
+                st.warning("No image available for Grad-CAM overlay")
+                return
+            
+            if isinstance(original, Image.Image):
+                original = np.array(original)
+            
+            # Resize to match Grad-CAM if needed
+            target_size = (grad_cam.shape[1], grad_cam.shape[0])
+            if original.shape[:2] != target_size:
+                original_resized = cv2.resize(original, target_size)
+            else:
+                original_resized = original
+            
+            # Normalize Grad-CAM
+            if grad_cam.max() > 0:
+                grad_cam_norm = grad_cam / grad_cam.max()
+            else:
+                grad_cam_norm = grad_cam
+            
+            # Apply colormap
+            grad_cam_colored = plt.cm.jet(grad_cam_norm)[:, :, :3]
+            grad_cam_colored = (grad_cam_colored * 255).astype(np.uint8)
+            
+            # Normalize original image
+            if original_resized.max() > 1.0:
+                original_norm = original_resized / 255.0
+            else:
+                original_norm = original_resized
+            
+            # Blend with original
+            grad_cam_overlay = 0.6 * grad_cam_colored + 0.4 * original_norm
+            grad_cam_overlay = (grad_cam_overlay * 255).astype(np.uint8)
+            
+            st.image(grad_cam_overlay, caption="Grad-CAM Attention Heatmap")
+            
+            # Attention statistics
+            st.markdown("**Attention Analysis:**")
+            attention_mean = np.mean(grad_cam_norm)
+            attention_max = np.max(grad_cam_norm)
+            attention_coverage = np.sum(grad_cam_norm > 0.1) / grad_cam_norm.size if grad_cam_norm.size > 0 else 0
+            
+            st.write(f"- Mean Attention: {attention_mean:.3f}")
+            st.write(f"- Peak Attention: {attention_max:.3f}")
+            st.write(f"- Attention Coverage: {attention_coverage:.1%}")
+            
+        except Exception as e:
+            st.error(f"Error creating Grad-CAM overlay: {e}")
+            st.info("Displaying Grad-CAM separately")
+            st.image(grad_cam, caption="Grad-CAM Heatmap", width=400)
 
 
 def create_clinical_reasoning(result: Dict):
@@ -345,6 +407,9 @@ def create_summary_dashboard(result: Dict):
     
     with col2:
         confidence = result['summary']['confidence']
+        # Add low confidence warning
+        if confidence < 0.6:
+            st.warning(f"⚠️ Low Confidence: {confidence:.1%}")
         st.metric(
             "Confidence",
             f"{confidence:.1%}",
@@ -353,10 +418,23 @@ def create_summary_dashboard(result: Dict):
         )
     
     with col3:
-        dominant = result['summary']['dominant_feature']
+        # Get actual dominant feature from fusion result
+        dominant = result.get('feature_fusion', {}).get('dominant_feature', 'model')
+        # Replace "model" with more descriptive name
+        if dominant == 'model':
+            dominant_display = "CNN Model"
+        elif dominant == 'nuclear':
+            dominant_display = "Nuclear Features"
+        elif dominant == 'cytoplasmic':
+            dominant_display = "Cytoplasmic Features"
+        elif dominant == 'background':
+            dominant_display = "Background Features"
+        else:
+            dominant_display = dominant.title()
+        
         st.metric(
             "Key Feature",
-            dominant.title(),
+            dominant_display,
             delta=None,
             delta_color="normal"
         )
@@ -387,6 +465,29 @@ def create_summary_dashboard(result: Dict):
     
     with col3:
         st.progress(background_score, text=f"Background: {background_score:.1%}")
+    
+    # Add cell maturity ratio if available
+    if 'cell_maturity_ratio' in result['extracted_features']['cytoplasmic']:
+        maturity_ratio = result['extracted_features']['cytoplasmic']['cell_maturity_ratio']
+        st.markdown("### Cell Maturity Assessment")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.metric(
+                "Cell Maturity Ratio",
+                f"{maturity_ratio:.2f}",
+                delta=None,
+                delta_color="normal"
+            )
+        
+        with col2:
+            if maturity_ratio < 2.0:
+                st.info("🟡 Immature cells detected")
+            elif maturity_ratio > 4.0:
+                st.info("🟢 Mature cells detected")
+            else:
+                st.info("🔵 Normal maturity")
 
 
 def main():
@@ -394,10 +495,21 @@ def main():
     st.markdown('<h1 class="main-header">🔬 Clinical Cytology Classification System</h1>', 
                 unsafe_allow_html=True)
     
-    # Load inference engine
-    engine, device = load_inference_engine()
+    # Initialize session state
+    if 'engine' not in st.session_state:
+        st.session_state.engine = None
+        st.session_state.device = None
+        st.session_state.last_result = None
+        st.session_state.last_image_id = None
     
-    if engine is None:
+    # Load inference engine (cached)
+    if st.session_state.engine is None:
+        with st.spinner("🔄 Loading AI models..."):
+            engine, device = load_inference_engine()
+            st.session_state.engine = engine
+            st.session_state.device = device
+    
+    if st.session_state.engine is None:
         st.error("❌ Could not load inference engine. Please check the configuration.")
         return
     
@@ -417,8 +529,12 @@ def main():
     use_demo = st.sidebar.checkbox("Use demo image", value=True)
     
     # Process image
+    image = None
+    image_id = None
+    
     if uploaded_file is not None:
         image = Image.open(uploaded_file).convert('RGB')
+        image_id = uploaded_file.name
         st.sidebar.success("✅ Image uploaded successfully")
     elif use_demo:
         # Create demo image with cell-like structures
@@ -435,9 +551,8 @@ def main():
         cv2.circle(demo_image, (150, 140), 38, (210, 160, 130), 2)
         
         image = Image.fromarray(demo_image)
+        image_id = "demo_image"
         st.sidebar.info("🎭 Using demo image with simulated cell structures")
-    else:
-        image = None
     
     if image is not None:
         # Store current image in session state
@@ -449,36 +564,52 @@ def main():
         
         # Analysis button
         if st.button("🔬 Analyze with AI", type="primary", use_container_width=True):
-            with st.spinner("🔄 Performing comprehensive analysis..."):
-                try:
-                    # Run inference
-                    result = engine.predict(image)
-                    
-                    # Display results
-                    st.markdown("---")
-                    
-                    # Section 1: Bethesda Classification
-                    create_bethesda_display(result['bethesda_classification'])
-                    
-                    # Section 2: Summary Dashboard
-                    create_summary_dashboard(result)
-                    
-                    # Section 3: Feature Analysis
-                    create_feature_analysis(result)
-                    
-                    # Section 4: Visual Analysis
-                    create_visual_analysis(result)
-                    
-                    # Section 5: Clinical Reasoning
-                    create_clinical_reasoning(result)
-                    
-                    # Success message
-                    st.success("✅ Analysis completed successfully!")
-                    
-                except Exception as e:
-                    st.error(f"❌ Error during analysis: {e}")
-                    import traceback
-                    st.error(traceback.format_exc())
+            # Check if we already have results for this image
+            if st.session_state.last_image_id == image_id and st.session_state.last_result is not None:
+                st.info("📋 Using cached analysis results")
+                result = st.session_state.last_result
+            else:
+                with st.spinner("🔄 Performing comprehensive analysis..."):
+                    try:
+                        # Run inference
+                        result = st.session_state.engine.predict(image)
+                        
+                        # Cache the result
+                        st.session_state.last_result = result
+                        st.session_state.last_image_id = image_id
+                        
+                    except Exception as e:
+                        st.error(f"❌ Error during analysis: {e}")
+                        import traceback
+                        st.error(traceback.format_exc())
+                        return
+            
+            # Display results
+            st.markdown("---")
+            
+            # Section 1: Bethesda Classification
+            create_bethesda_display(result['bethesda_classification'])
+            
+            # Section 2: Summary Dashboard
+            create_summary_dashboard(result)
+            
+            # Section 3: Feature Analysis
+            create_feature_analysis(result)
+            
+            # Section 4: Visual Analysis
+            create_visual_analysis(result)
+            
+            # Section 5: Clinical Reasoning
+            create_clinical_reasoning(result)
+            
+            # Success message
+            st.success("✅ Analysis completed successfully!")
+            
+            # Add clear cache button
+            if st.button("🗑️ Clear Cache"):
+                st.session_state.last_result = None
+                st.session_state.last_image_id = None
+                st.rerun()
     
     # Information section
     st.markdown("---")

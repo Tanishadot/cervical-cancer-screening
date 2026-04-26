@@ -24,7 +24,13 @@ sys.path.append(str(Path(__file__).parent.parent))
 from backend.inference import create_inference_engine
 from backend.feature_extraction import CytologyFeatureExtractor
 
-# Note: st.set_page_config() is called in the main entry file to avoid duplicate calls
+# Configure Streamlit
+st.set_page_config(
+    page_title="Clinical Cytology Classification",
+    page_icon="🔬",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
 
 # Custom CSS
 st.markdown("""
@@ -79,7 +85,7 @@ def load_inference_engine():
     try:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         st.info(f"🖥️ Device: {device}")
-        
+        \
         # Try to load real model
         model_path = "outputs/models/best_model.pth"
         engine = create_inference_engine(model_path, device)
@@ -180,16 +186,12 @@ def create_feature_analysis(result: Dict):
     # Create feature contribution chart
     st.markdown("### Feature Contribution Analysis")
     
-    # Safely access feature_fusion
-    fusion = result.get("feature_fusion", {})
-    contrib = fusion.get("feature_contributions", {})
-    
     feature_names = ['Model', 'Nuclear', 'Cytoplasmic', 'Background']
     feature_values = [
-        contrib.get('model', 0.0),
-        contrib.get('nuclear', 0.0),
-        contrib.get('cytoplasmic', 0.0),
-        contrib.get('background', 0.0)
+        result['feature_fusion']['feature_contributions']['model'],
+        result['feature_fusion']['feature_contributions']['nuclear'],
+        result['feature_fusion']['feature_contributions']['cytoplasmic'],
+        result['feature_fusion']['feature_contributions']['background']
     ]
     
     fig = go.Figure(data=[
@@ -284,83 +286,61 @@ def create_visual_analysis(result: Dict):
             st.image(masks['background'], caption="Background Mask", width=200)
     
     with col2:
-        st.markdown("### Model Attention")
+        st.markdown("### Grad-CAM Heatmap")
         
-        # Check if Grad-CAM has meaningful values
-        if grad_cam is not None and grad_cam.max() > 0:
-            try:
-                # Get original image for blending
-                original = st.session_state.get('current_image')
-                if original is None:
-                    st.warning("No image available for Grad-CAM overlay")
-                    return
-                
-                if isinstance(original, Image.Image):
-                    original = np.array(original)
-                
-                # Resize to match Grad-CAM if needed
-                target_size = (grad_cam.shape[1], grad_cam.shape[0])
-                if original.shape[:2] != target_size:
-                    original_resized = cv2.resize(original, target_size)
-                else:
-                    original_resized = original
-                
-                # Normalize Grad-CAM
-                grad_cam_norm = grad_cam / grad_cam.max()
-                
-                # Apply colormap
-                grad_cam_colored = plt.cm.jet(grad_cam_norm)[:, :, :3]
-                grad_cam_colored = (grad_cam_colored * 255).astype(np.uint8)
-                
-                # Normalize original image
-                if original_resized.max() > 1.0:
-                    original_norm = original_resized / 255.0
-                else:
-                    original_norm = original_resized
-                
-                # Blend with original
-                grad_cam_overlay = 0.6 * grad_cam_colored + 0.4 * original_norm
-                grad_cam_overlay = (grad_cam_overlay * 255).astype(np.uint8)
-                
-                st.image(grad_cam_overlay, caption="Grad-CAM Attention Heatmap")
-                
-                # Attention statistics
-                st.markdown("**Attention Analysis:**")
-                attention_mean = np.mean(grad_cam_norm)
-                attention_max = np.max(grad_cam_norm)
-                attention_coverage = np.sum(grad_cam_norm > 0.1) / grad_cam_norm.size if grad_cam_norm.size > 0 else 0
-                
-                st.write(f"- Mean Attention: {attention_mean:.3f}")
-                st.write(f"- Peak Attention: {attention_max:.3f}")
-                st.write(f"- Attention Coverage: {attention_coverage:.1%}")
-                
-            except Exception as e:
-                st.error(f"Error creating Grad-CAM overlay: {e}")
-                st.info("Displaying Grad-CAM separately")
-                st.image(grad_cam, caption="Grad-CAM Heatmap", width=400)
-        else:
-            # Grad-CAM failed or has no meaningful values
-            st.warning("⚠️ Grad-CAM heatmap not available")
-            st.info("Model attention could not be computed. Using segmentation-based feature importance instead.")
+        try:
+            # Get original image for blending
+            original = st.session_state.get('current_image')
+            if original is None:
+                st.warning("No image available for Grad-CAM overlay")
+                return
             
-            # Show segmentation-based importance
-            st.markdown("**Segmentation-Based Importance:**")
-            nucleus_area = np.sum(masks['nucleus'] > 0)
-            cytoplasm_area = np.sum(masks['cytoplasm'] > 0)
-            background_area = np.sum(masks['background'] > 0)
-            total_area = nucleus_area + cytoplasm_area + background_area
+            if isinstance(original, Image.Image):
+                original = np.array(original)
             
-            if total_area > 0:
-                st.write(f"- Nucleus region: {nucleus_area/total_area:.1%}")
-                st.write(f"- Cytoplasm region: {cytoplasm_area/total_area:.1%}")
-                st.write(f"- Background region: {background_area/total_area:.1%}")
-                
-                # Show which region is dominant
-                areas = {'Nucleus': nucleus_area, 'Cytoplasm': cytoplasm_area, 'Background': background_area}
-                dominant_region = max(areas, key=areas.get)
-                st.write(f"- **Dominant region: {dominant_region}**")
+            # Resize to match Grad-CAM if needed
+            target_size = (grad_cam.shape[1], grad_cam.shape[0])
+            if original.shape[:2] != target_size:
+                original_resized = cv2.resize(original, target_size)
             else:
-                st.warning("No regions detected for importance analysis")
+                original_resized = original
+            
+            # Normalize Grad-CAM
+            if grad_cam.max() > 0:
+                grad_cam_norm = grad_cam / grad_cam.max()
+            else:
+                grad_cam_norm = grad_cam
+            
+            # Apply colormap
+            grad_cam_colored = plt.cm.jet(grad_cam_norm)[:, :, :3]
+            grad_cam_colored = (grad_cam_colored * 255).astype(np.uint8)
+            
+            # Normalize original image
+            if original_resized.max() > 1.0:
+                original_norm = original_resized / 255.0
+            else:
+                original_norm = original_resized
+            
+            # Blend with original
+            grad_cam_overlay = 0.6 * grad_cam_colored + 0.4 * original_norm
+            grad_cam_overlay = (grad_cam_overlay * 255).astype(np.uint8)
+            
+            st.image(grad_cam_overlay, caption="Grad-CAM Attention Heatmap")
+            
+            # Attention statistics
+            st.markdown("**Attention Analysis:**")
+            attention_mean = np.mean(grad_cam_norm)
+            attention_max = np.max(grad_cam_norm)
+            attention_coverage = np.sum(grad_cam_norm > 0.1) / grad_cam_norm.size if grad_cam_norm.size > 0 else 0
+            
+            st.write(f"- Mean Attention: {attention_mean:.3f}")
+            st.write(f"- Peak Attention: {attention_max:.3f}")
+            st.write(f"- Attention Coverage: {attention_coverage:.1%}")
+            
+        except Exception as e:
+            st.error(f"Error creating Grad-CAM overlay: {e}")
+            st.info("Displaying Grad-CAM separately")
+            st.image(grad_cam, caption="Grad-CAM Heatmap", width=400)
 
 
 def create_clinical_reasoning(result: Dict):
@@ -378,36 +358,9 @@ def create_clinical_reasoning(result: Dict):
         </div>
         """, unsafe_allow_html=True)
         
-        # Safely get dominant feature from fusion result
-        fusion = result.get("feature_fusion", {})
-        dominant = fusion.get("dominant_feature", "background")
-        if dominant == 'model':
-            dominant_display = "CNN Model"
-        elif dominant == 'nuclear':
-            dominant_display = "Nuclear Features"
-        elif dominant == 'cytoplasmic':
-            dominant_display = "Cytoplasmic Features"
-        elif dominant == 'background':
-            dominant_display = "Background Features"
-        elif dominant == 'cnn':
-            dominant_display = "CNN Features"
-        elif dominant == 'swin':
-            dominant_display = "Swin Features"
-        else:
-            dominant_display = dominant.title()
-        
-        st.write(f"**Dominant Feature:** {dominant_display}")
+        st.write(f"**Dominant Feature:** {bethesda['dominant_feature'].title()}")
         st.write(f"**Clinical Score:** {bethesda['clinical_score']:.3f}")
         st.write(f"**Confidence Level:** {bethesda['confidence']:.3f}")
-        
-        # Decision type
-        decision_type = bethesda.get('decision_type', 'model-based')
-        if decision_type == 'rule-based':
-            st.write(f"**Decision Type:** 📋 Rule-based (Parabasal Override)")
-            if bethesda.get('parabasal_override', False):
-                st.info("✅ Parabasal cell override applied - classified as NILM")
-        else:
-            st.write(f"**Decision Type:** 🤖 Model-based")
         
         # Risk indicator
         risk_color = {
@@ -435,14 +388,6 @@ def create_clinical_reasoning(result: Dict):
         features = bethesda['feature_scores']
         for feature, score in features.items():
             st.write(f"- {feature.title()}: {score:.3f}")
-        
-        # Add feature scores comparison if available
-        fusion = result.get("feature_fusion", {})
-        if 'feature_scores' in fusion:
-            st.markdown("**Raw Feature Scores:**")
-            raw_scores = fusion['feature_scores']
-            for feature, score in raw_scores.items():
-                st.write(f"- {feature.title()}: {score:.3f}")
 
 
 def create_summary_dashboard(result: Dict):
@@ -473,11 +418,9 @@ def create_summary_dashboard(result: Dict):
         )
     
     with col3:
-        # Safely get dominant feature from fusion result
-        fusion = result.get("feature_fusion", {})
-        dominant = fusion.get("dominant_feature", "background")
-        
-        # Replace with more descriptive name
+        # Get actual dominant feature from fusion result
+        dominant = result.get('feature_fusion', {}).get('dominant_feature', 'model')
+        # Replace "model" with more descriptive name
         if dominant == 'model':
             dominant_display = "CNN Model"
         elif dominant == 'nuclear':
@@ -486,17 +429,8 @@ def create_summary_dashboard(result: Dict):
             dominant_display = "Cytoplasmic Features"
         elif dominant == 'background':
             dominant_display = "Background Features"
-        elif dominant == 'cnn':
-            dominant_display = "CNN Features"
-        elif dominant == 'swin':
-            dominant_display = "Swin Features"
         else:
             dominant_display = dominant.title()
-        
-        # Add decision type indicator
-        decision_type = result.get('bethesda_classification', {}).get('decision_type', 'model-based')
-        if decision_type == 'rule-based':
-            dominant_display += " 📋"
         
         st.metric(
             "Key Feature",

@@ -72,7 +72,7 @@ class CytologyFeatureExtractor:
     
     def _segment_regions(self, gray: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
-        Segment image into nucleus, cytoplasm, and background regions using adaptive thresholding.
+        Segment image into nucleus, cytoplasm, and background regions.
         
         Args:
             gray: Grayscale image
@@ -80,54 +80,27 @@ class CytologyFeatureExtractor:
         Returns:
             Tuple of (nucleus_mask, cytoplasm_mask, background_mask)
         """
-        # Apply adaptive thresholding for better nucleus detection
-        # Use smaller block size for more sensitive detection
-        block_size = 11
-        C = 2  # Constant subtracted from the mean
-        
-        # Adaptive threshold for nuclei (dark regions)
-        nucleus_binary = cv2.adaptiveThreshold(
-            gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
-            cv2.THRESH_BINARY_INV, block_size, C
-        )
+        # Threshold for nuclei (dark regions)
+        _, nucleus_binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
         
         # Morphological operations to clean up
-        kernel_small = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-        kernel_medium = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+        nucleus_mask = cv2.morphologyEx(nucleus_binary, cv2.MORPH_CLOSE, kernel)
+        nucleus_mask = cv2.morphologyEx(nucleus_mask, cv2.MORPH_OPEN, kernel)
         
-        # Opening to remove noise
-        nucleus_mask = cv2.morphologyEx(nucleus_binary, cv2.MORPH_OPEN, kernel_small, iterations=2)
-        
-        # Closing to fill gaps
-        nucleus_mask = cv2.morphologyEx(nucleus_mask, cv2.MORPH_CLOSE, kernel_medium, iterations=1)
-        
-        # Additional opening to clean small artifacts
-        nucleus_mask = cv2.morphologyEx(nucleus_mask, cv2.MORPH_OPEN, kernel_small, iterations=1)
-        
-        # Remove small objects and very large objects (likely artifacts)
+        # Remove small objects
         contours, _ = cv2.findContours(nucleus_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        min_area = 30  # Minimum nucleus area (reduced for smaller cells)
-        max_area = gray.shape[0] * gray.shape[1] * 0.1  # Max 10% of image area
-        
+        min_area = 50  # Minimum nucleus area
         nucleus_mask = np.zeros_like(nucleus_mask)
         
         for contour in contours:
-            area = cv2.contourArea(contour)
-            if min_area <= area <= max_area:
-                # Check if contour is reasonably circular (nucleus-like)
-                perimeter = cv2.arcLength(contour, True)
-                if perimeter > 0:
-                    circularity = 4 * np.pi * area / (perimeter * perimeter)
-                    if circularity > 0.3:  # Reasonably circular
-                        cv2.drawContours(nucleus_mask, [contour], -1, 255, -1)
+            if cv2.contourArea(contour) > min_area:
+                cv2.drawContours(nucleus_mask, [contour], -1, 255, -1)
         
         # Create cytoplasm mask (region around nucleus)
         kernel_large = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (21, 21))
         cytoplasm_dilated = cv2.dilate(nucleus_mask, kernel_large, iterations=2)
         cytoplasm_mask = cv2.subtract(cytoplasm_dilated, nucleus_mask)
-        
-        # Clean cytoplasm mask
-        cytoplasm_mask = cv2.morphologyEx(cytoplasm_mask, cv2.MORPH_OPEN, kernel_small, iterations=1)
         
         # Background is everything else
         background_mask = 255 - cv2.add(nucleus_mask, cytoplasm_mask)

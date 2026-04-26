@@ -57,25 +57,14 @@ class ClinicalReasoningEngine:
             cytoplasmic_features = fused_result['extracted_features']['cytoplasmic']
             background_features = fused_result['extracted_features']['background']
             
-            # Check for parabasal override rule BEFORE model classification
-            is_parabasal_override = self._check_parabasal_override(nuclear_features, cytoplasmic_features, background_features)
+            # Determine Bethesda class
+            bethesda_class, bethesda_full, risk_level = self._determine_class(final_score)
             
-            if is_parabasal_override:
-                # Force NILM classification for parabasal cells
-                bethesda_class = 'NILM'
-                bethesda_full = 'Negative for Intraepithelial Lesion or Malignancy'
-                risk_level = 'Low Risk - Normal findings'
-                final_score = 0.2  # Low score for NILM
-                reasoning = self._generate_parabasal_reasoning(nuclear_features, cytoplasmic_features, background_features)
-                decision_type = 'rule-based'
-            else:
-                # Determine Bethesda class normally
-                bethesda_class, bethesda_full, risk_level = self._determine_class(final_score)
-                reasoning = self._generate_reasoning(
-                    nuclear_features, cytoplasmic_features, background_features, 
-                    bethesda_class, final_score
-                )
-                decision_type = 'model-based'
+            # Generate clinical reasoning
+            reasoning = self._generate_reasoning(
+                nuclear_features, cytoplasmic_features, background_features, 
+                bethesda_class, final_score
+            )
             
             # Calculate confidence
             confidence = self._calculate_confidence(final_score, bethesda_class)
@@ -93,9 +82,7 @@ class ClinicalReasoningEngine:
                     'background': background_score
                 },
                 'confidence': confidence,
-                'dominant_feature': fused_result['dominant_feature'],
-                'decision_type': decision_type,
-                'parabasal_override': is_parabasal_override
+                'dominant_feature': fused_result['dominant_feature']
             }
             
         except Exception as e:
@@ -180,41 +167,6 @@ class ClinicalReasoningEngine:
         
         return "; ".join(reasoning_parts) if reasoning_parts else "Multiple subtle features detected"
     
-    def _check_parabasal_override(self, nuclear: Dict, cytoplasmic: Dict, background: Dict) -> bool:
-        """Check if parabasal override should be applied."""
-        try:
-            # Get cell maturity ratio
-            cell_maturity_ratio = cytoplasmic.get('cell_maturity_ratio', 1.0)
-            
-            # Get key features
-            perinuclear_halo = cytoplasmic.get('perinuclear_halo', 0)
-            background_debris = background.get('background_debris', 0)
-            
-            # Parabasal override criteria (stricter than general parabasal detection)
-            return (
-                cell_maturity_ratio < 0.3 and  # Very immature cells
-                perinuclear_halo < 0.3 and      # No perinuclear halo
-                background_debris < 0.3         # Clean background
-            )
-        except Exception:
-            return False
-    
-    def _generate_parabasal_reasoning(self, nuclear: Dict, cytoplasmic: Dict, background: Dict) -> str:
-        """Generate reasoning for parabasal override."""
-        reasoning_parts = []
-        
-        cell_maturity_ratio = cytoplasmic.get('cell_maturity_ratio', 1.0)
-        perinuclear_halo = cytoplasmic.get('perinuclear_halo', 0)
-        background_debris = background.get('background_debris', 0)
-        
-        reasoning_parts.append("Parabasal cell override applied")
-        reasoning_parts.append(f"Very low cell maturity ratio ({cell_maturity_ratio:.2f})")
-        reasoning_parts.append(f"Minimal perinuclear halo ({perinuclear_halo:.3f})")
-        reasoning_parts.append(f"Clean background ({background_debris:.3f})")
-        reasoning_parts.append("Immature normal cells - classified as NILM")
-        
-        return "; ".join(reasoning_parts)
-    
     def _is_parabasal_cell(self, nuclear: Dict, cytoplasmic: Dict, background: Dict) -> bool:
         """Check if this is a parabasal cell (immature normal cell)."""
         try:
@@ -256,169 +208,6 @@ class ClinicalReasoningEngine:
         
         return min(max(confidence, 0.5), 0.95)
     
-    def classify_bethesda_with_dual_models(self, dual_result: Dict, aligned_features: Dict, explanations: Dict) -> Dict:
-        """
-        Classify according to Bethesda system with dual model insights.
-        
-        Args:
-            dual_result: Result from dual model
-            aligned_features: Features aligned with explanations
-            explanations: Model explanations
-            
-        Returns:
-            Bethesda classification with dual model reasoning
-        """
-        try:
-            # Get dual model confidence and weights
-            model_confidence = dual_result['final_confidence'].item()
-            cnn_weight = dual_result['fusion']['cnn_weight'].item()
-            swin_weight = dual_result['fusion']['swin_weight'].item()
-            
-            # Get aligned feature scores
-            nuclear_score = aligned_features['nuclear']['overall_nuclear_score']
-            cytoplasmic_score = aligned_features['cytoplasmic']['overall_cytoplasmic_score']
-            background_score = aligned_features['background']['overall_background_score']
-            
-            # Calculate final score with dual model weights
-            final_score = (
-                0.4 * model_confidence +  # Model confidence
-                0.2 * nuclear_score +     # Nuclear features
-                0.3 * cytoplasmic_score + # Cytoplasmic features
-                0.1 * background_score    # Background features
-            )
-            
-            # Get specific features for reasoning
-            nuclear_features = aligned_features['nuclear']
-            cytoplasmic_features = aligned_features['cytoplasmic']
-            background_features = aligned_features['background']
-            
-            # Check for parabasal override rule
-            is_parabasal_override = self._check_parabasal_override(nuclear_features, cytoplasmic_features, background_features)
-            
-            if is_parabasal_override:
-                # Force NILM classification for parabasal cells
-                bethesda_class = 'NILM'
-                bethesda_full = 'Negative for Intraepithelial Lesion or Malignancy'
-                risk_level = 'Low Risk - Normal findings'
-                final_score = 0.2  # Low score for NILM
-                reasoning = self._generate_parabasal_reasoning(nuclear_features, cytoplasmic_features, background_features)
-                decision_type = 'rule-based'
-            else:
-                # Determine Bethesda class normally
-                bethesda_class, bethesda_full, risk_level = self._determine_class(final_score)
-                reasoning = self._generate_dual_model_reasoning(
-                    nuclear_features, cytoplasmic_features, background_features, 
-                    bethesda_class, final_score, explanations, cnn_weight, swin_weight
-                )
-                decision_type = 'dual-model-based'
-            
-            # Calculate confidence
-            confidence = self._calculate_confidence(final_score, bethesda_class)
-            
-            return {
-                'bethesda_class': bethesda_class,
-                'bethesda_full': bethesda_full,
-                'clinical_score': final_score,
-                'model_confidence': model_confidence,
-                'risk_level': risk_level,
-                'clinical_reasoning': reasoning,
-                'feature_scores': {
-                    'nuclear': nuclear_score,
-                    'cytoplasmic': cytoplasmic_score,
-                    'background': background_score
-                },
-                'confidence': confidence,
-                'dominant_feature': explanations.get('dominant_region', 'background'),
-                'decision_type': decision_type,
-                'parabasal_override': is_parabasal_override,
-                'dual_model_insights': {
-                    'cnn_weight': cnn_weight,
-                    'swin_weight': swin_weight,
-                    'dominant_region': explanations.get('dominant_region', 'background'),
-                    'nucleus_importance': explanations.get('nucleus_importance', 0.33),
-                    'cytoplasmic_importance': explanations.get('cytoplasmic_importance', 0.33),
-                    'background_importance': explanations.get('background_importance', 0.34)
-                }
-            }
-            
-        except Exception as e:
-            logger.error(f"Error in dual model clinical reasoning: {e}")
-            return self._get_default_bethesda_result()
-    
-    def _generate_dual_model_reasoning(self, nuclear: Dict, cytoplasmic: Dict, background: Dict, 
-                                      bethesda_class: str, final_score: float, explanations: Dict,
-                                      cnn_weight: float, swin_weight: float) -> str:
-        """Generate clinical reasoning with dual model insights."""
-        reasoning_parts = []
-        
-        # Add model weight information
-        if cnn_weight > 0.6:
-            reasoning_parts.append("CNN model dominates analysis (local features)")
-        elif swin_weight > 0.6:
-            reasoning_parts.append("Swin Transformer dominates analysis (global context)")
-        else:
-            reasoning_parts.append("Balanced CNN and Swin contributions")
-        
-        # Add dominant region information
-        dominant_region = explanations.get('dominant_region', 'background')
-        if dominant_region == 'nucleus':
-            reasoning_parts.append("Nuclear features drive classification")
-        elif dominant_region == 'cytoplasmic':
-            reasoning_parts.append("Cytoplasmic features drive classification")
-        else:
-            reasoning_parts.append("Background context influences classification")
-        
-        # Nuclear-based reasoning
-        if nuclear['hyperchromasia'] > 0.5:
-            reasoning_parts.append("Hyperchromasia (dense chromatin) present")
-        if nuclear['nuclear_enlargement'] > 0.5:
-            reasoning_parts.append("Nuclear enlargement detected")
-        if nuclear['nc_ratio'] > 0.6:
-            reasoning_parts.append("Increased N:C ratio")
-        if nuclear['nuclear_contours'] > 0.5:
-            reasoning_parts.append("Irregular nuclear contours")
-        
-        # Cytoplasmic-based reasoning
-        if cytoplasmic['perinuclear_halo'] > 0.5:
-            reasoning_parts.append("Perinuclear halo (koilocytosis) - HPV indicator")
-        if cytoplasmic['keratinization'] > 0.4:
-            reasoning_parts.append("Keratinization (dyskeratosis) present")
-        if cytoplasmic['koilocytosis_score'] > 0.6:
-            reasoning_parts.append("Strong koilocytosis features")
-        
-        # Cell maturity reasoning
-        if 'cell_maturity_ratio' in cytoplasmic:
-            if cytoplasmic['cell_maturity_ratio'] < 2.0:
-                reasoning_parts.append("Low cell maturity ratio - immature cells")
-            elif cytoplasmic['cell_maturity_ratio'] > 4.0:
-                reasoning_parts.append("High cell maturity ratio - mature cells")
-        
-        # Background-based reasoning
-        if background['background_debris'] > 0.4:
-            reasoning_parts.append("Background debris present")
-        if background['tumor_diathesis'] > 0.3:
-            reasoning_parts.append("Tumor diathesis (necrotic background)")
-        if background['background_cleanliness'] > 0.7:
-            reasoning_parts.append("Relatively clean background")
-        
-        # Class-specific reasoning
-        if bethesda_class == 'LSIL':
-            if cytoplasmic['perinuclear_halo'] > 0.5:
-                reasoning_parts.append("Consistent with low-grade HPV-related changes")
-            else:
-                reasoning_parts.append("Low-grade changes detected")
-        elif bethesda_class == 'HSIL':
-            if nuclear['nc_ratio'] > 0.6:
-                reasoning_parts.append("High-grade changes with marked atypia")
-            else:
-                reasoning_parts.append("High-grade epithelial changes")
-        elif bethesda_class == 'SCC':
-            reasoning_parts.append("Features consistent with invasive carcinoma")
-        elif bethesda_class == 'NILM':
-            reasoning_parts.append("No significant pathological changes detected")
-        
-        return "; ".join(reasoning_parts) if reasoning_parts else "Multiple subtle features detected"
-    
     def _get_default_bethesda_result(self) -> Dict:
         """Return default Bethesda result when error occurs."""
         return {
@@ -430,15 +219,7 @@ class ClinicalReasoningEngine:
             'clinical_reasoning': 'Analysis incomplete - manual review recommended',
             'feature_scores': {'nuclear': 0.3, 'cytoplasmic': 0.3, 'background': 0.3},
             'confidence': 0.5,
-            'dominant_feature': 'model',
-            'dual_model_insights': {
-                'cnn_weight': 0.5,
-                'swin_weight': 0.5,
-                'dominant_region': 'background',
-                'nucleus_importance': 0.33,
-                'cytoplasmic_importance': 0.33,
-                'background_importance': 0.34
-            }
+            'dominant_feature': 'model'
         }
 
 

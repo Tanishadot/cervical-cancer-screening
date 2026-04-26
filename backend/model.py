@@ -180,14 +180,8 @@ class FeatureFusion:
                 'background': self.feature_weights['background'] * background_score
             }
             
-            # Find dominant feature based on actual feature scores (not weighted contributions)
-            feature_scores = {
-                'nuclear': nuclear_score,
-                'cytoplasmic': cytoplasmic_score,
-                'background': background_score,
-                'model': model_confidence
-            }
-            dominant_feature = max(feature_scores, key=feature_scores.get)
+            # Find dominant feature
+            dominant_feature = max(contributions, key=contributions.get)
             
             return {
                 'final_class': final_class,
@@ -196,8 +190,7 @@ class FeatureFusion:
                 'feature_contributions': contributions,
                 'dominant_feature': dominant_feature,
                 'model_prediction': model_prediction,
-                'extracted_features': extracted_features,
-                'feature_scores': feature_scores
+                'extracted_features': extracted_features
             }
             
         except Exception as e:

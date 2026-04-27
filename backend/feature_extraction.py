@@ -40,8 +40,8 @@ class CytologyFeatureExtractor:
             gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
             hsv = cv2.cvtColor(image, cv2.COLOR_RGB2HSV)
             
-            # Segment regions
-            nucleus_mask, cytoplasm_mask, background_mask = self._segment_regions(gray)
+            # Segment regions using improved pipeline
+            nucleus_mask, cytoplasm_mask, background_mask = self._segment_regions(image)
             
             # Extract features for each region
             nuclear_features = self._extract_nuclear_features(image, nucleus_mask, gray, hsv)
@@ -70,42 +70,197 @@ class CytologyFeatureExtractor:
             logger.error(f"Error extracting features: {e}")
             return self._get_default_features()
     
-    def _segment_regions(self, gray: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    def _segment_regions(self, image: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
-        Segment image into nucleus, cytoplasm, and background regions.
+        Segment image into nucleus, cytoplasm, and background regions using improved pipeline.
         
         Args:
-            gray: Grayscale image
+            image: RGB image array
             
         Returns:
             Tuple of (nucleus_mask, cytoplasm_mask, background_mask)
         """
-        # Threshold for nuclei (dark regions)
-        _, nucleus_binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+        # 1. Preprocessing Improvements
+        # Convert to LAB color space
+        lab = cv2.cvtColor(image, cv2.COLOR_RGB2LAB)
+        l_channel, a_channel, b_channel = cv2.split(lab)
         
-        # Morphological operations to clean up
-        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
-        nucleus_mask = cv2.morphologyEx(nucleus_binary, cv2.MORPH_CLOSE, kernel)
-        nucleus_mask = cv2.morphologyEx(nucleus_mask, cv2.MORPH_OPEN, kernel)
+        # Apply CLAHE on L-channel to enhance contrast
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+        l_enhanced = clahe.apply(l_channel)
         
-        # Remove small objects
-        contours, _ = cv2.findContours(nucleus_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        min_area = 50  # Minimum nucleus area
-        nucleus_mask = np.zeros_like(nucleus_mask)
+        # Apply Gaussian blur to reduce noise
+        l_blurred = cv2.GaussianBlur(l_enhanced, (5, 5), 0)
         
-        for contour in contours:
-            if cv2.contourArea(contour) > min_area:
-                cv2.drawContours(nucleus_mask, [contour], -1, 255, -1)
+        # 2. Color-based Filtering
+        # Convert to HSV for stain masking
+        hsv = cv2.cvtColor(image, cv2.COLOR_RGB2HSV)
         
-        # Create cytoplasm mask (region around nucleus)
+        # Extract purple/blue stain regions (hematoxylin)
+        # Adjusted range to better capture hematoxylin-stained nuclei
+        lower_hsv = np.array([100, 30, 30])
+        upper_hsv = np.array([140, 255, 255])
+        stain_mask = cv2.inRange(hsv, lower_hsv, upper_hsv)
+        
+        # Combine enhanced L-channel with stain mask
+        combined = cv2.bitwise_and(l_blurred, l_blurred, mask=stain_mask)
+        
+        # 3. Initial Thresholding
+        # Use adaptive thresholding instead of Otsu for better nucleus detection
+        nucleus_binary = cv2.adaptiveThreshold(combined, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
+                                             cv2.THRESH_BINARY, 11, 2)
+        
+        # Invert to get nuclei as white objects
+        nucleus_binary = cv2.bitwise_not(nucleus_binary)
+        
+        # 4. Morphological Filtering
+        kernel_small = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+        kernel_medium = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+        
+        # Remove noise with opening
+        nucleus_clean = cv2.morphologyEx(nucleus_binary, cv2.MORPH_OPEN, kernel_small)
+        
+        # Fill holes with closing
+        nucleus_filled = cv2.morphologyEx(nucleus_clean, cv2.MORPH_CLOSE, kernel_medium)
+        
+        # 5. Shape Constraints and Connected Component Filtering
+        nucleus_mask = self._filter_valid_nuclei(nucleus_filled)
+        
+        # 6. Create cytoplasm mask (region around nucleus)
         kernel_large = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (21, 21))
         cytoplasm_dilated = cv2.dilate(nucleus_mask, kernel_large, iterations=2)
         cytoplasm_mask = cv2.subtract(cytoplasm_dilated, nucleus_mask)
         
-        # Background is everything else
+        # 7. Background is everything else
         background_mask = 255 - cv2.add(nucleus_mask, cytoplasm_mask)
         
         return nucleus_mask, cytoplasm_mask, background_mask
+    
+    def _filter_valid_nuclei(self, binary_mask: np.ndarray) -> np.ndarray:
+        """
+        Filter binary mask to keep only biologically valid nuclei.
+        
+        Args:
+            binary_mask: Initial binary mask of potential nuclei
+            
+        Returns:
+            Clean binary mask with only valid nuclei
+        """
+        # Find connected components
+        contours, _ = cv2.findContours(binary_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        
+        # Create clean mask
+        clean_mask = np.zeros_like(binary_mask)
+        
+        # Biological constraints for nuclei
+        min_area = 30  # Minimum nucleus area in pixels (reduced for testing)
+        max_area = 5000  # Maximum nucleus area in pixels
+        min_circularity = 0.4  # Minimum circularity (reduced for testing)
+        min_solidity = 0.7  # Minimum solidity (reduced for testing)
+        max_aspect_ratio = 3.0  # Maximum aspect ratio (increased for testing)
+        
+        for contour in contours:
+            # Area filtering
+            area = cv2.contourArea(contour)
+            if area < min_area or area > max_area:
+                continue
+            
+            # Shape constraints
+            perimeter = cv2.arcLength(contour, True)
+            if perimeter == 0:
+                continue
+            
+            # Circularity: 4π * Area / Perimeter²
+            circularity = 4 * np.pi * area / (perimeter * perimeter)
+            if circularity < min_circularity:
+                continue
+            
+            # Solidity: Area / Convex Hull Area
+            hull = cv2.convexHull(contour)
+            hull_area = cv2.contourArea(hull)
+            if hull_area == 0:
+                continue
+            
+            solidity = area / hull_area
+            if solidity < min_solidity:
+                continue
+            
+            # Aspect ratio filtering
+            x, y, w, h = cv2.boundingRect(contour)
+            aspect_ratio = max(w, h) / min(w, h)
+            if aspect_ratio > max_aspect_ratio:
+                continue
+            
+            # Additional validation: enclosed structure
+            if not self._is_enclosed_structure(contour, binary_mask):
+                continue
+            
+            # If all constraints passed, add to clean mask
+            cv2.drawContours(clean_mask, [contour], -1, 255, -1)
+        
+        return clean_mask
+    
+    def _is_enclosed_structure(self, contour: np.ndarray, binary_mask: np.ndarray) -> bool:
+        """
+        Check if the contour represents an enclosed structure with consistent boundary.
+        
+        Args:
+            contour: Contour to validate
+            binary_mask: Original binary mask
+            
+        Returns:
+            True if valid enclosed structure, False otherwise
+        """
+        # Create a mask for this specific contour
+        contour_mask = np.zeros_like(binary_mask)
+        cv2.drawContours(contour_mask, [contour], -1, 255, -1)
+        
+        # Check if the contour has a reasonable area
+        area = cv2.contourArea(contour)
+        if area < 30:  # Too small to be a valid nucleus
+            return False
+        
+        # Check if the contour is closed (contour should have at least 3 points)
+        if len(contour) < 3:
+            return False
+        
+        # Check if the contour forms a closed loop
+        # For a closed contour, the first and last points should be close
+        if len(contour) > 0:
+            first_point = contour[0][0]
+            last_point = contour[-1][0]
+            distance = np.sqrt((first_point[0] - last_point[0])**2 + (first_point[1] - last_point[1])**2)
+            if distance > 5:  # Points too far apart, not closed
+                return False
+        
+        # Check if the contour has a reasonable perimeter
+        perimeter = cv2.arcLength(contour, True)
+        if perimeter == 0 or perimeter > 1000:  # Unreasonable perimeter
+            return False
+        
+        # Check if the contour is well-defined in the original mask
+        # The contour should correspond to a filled region in the binary mask
+        x, y, w, h = cv2.boundingRect(contour)
+        
+        # Ensure bounding box is within image bounds
+        if x < 0 or y < 0 or x + w >= binary_mask.shape[1] or y + h >= binary_mask.shape[0]:
+            return False
+        
+        # Extract the region from the original mask
+        roi = binary_mask[y:y+h, x:x+w]
+        if roi.size == 0:
+            return False
+        
+        # Check if the region has sufficient white pixels (should be mostly filled)
+        white_pixels = np.sum(roi > 0)
+        total_pixels = roi.size
+        fill_ratio = white_pixels / total_pixels
+        
+        # Should have reasonable fill ratio (not too empty)
+        if fill_ratio < 0.1:  # Less than 10% filled
+            return False
+        
+        return True
     
     def _extract_nuclear_features(self, image: np.ndarray, mask: np.ndarray, 
                                 gray: np.ndarray, hsv: np.ndarray) -> Dict:
